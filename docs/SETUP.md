@@ -30,6 +30,7 @@ without going through the plugin. Dashboard → Config:
 
 | Setting | Value | Why |
 |---|---|---|
+| **Plugins → available plugins (`plugin_set`)** | **only `astrbot_plugin_regular`** | **required.** AstrBot checks every plugin's command filters *before* any plugin runs and before the group whitelist, so another plugin's command (e.g. a typed-argument error) could reply in the group no matter what this plugin does. Plugins outside `plugin_set` are never checked. |
 | `admins_id` | add **your** QQ number | `/reg` only answers admins |
 | `disable_builtin_commands` | on | nobody can run `/help`, `/provider`, `/reset`… from the group |
 | `no_permission_reply` | off | don't announce that commands exist |
@@ -50,6 +51,11 @@ DM the bot account from your own QQ:
 
 1. `/reg status` → you should get a status block back. If nothing comes back,
    check `admins_id` and that your QQ is in `id_whitelist`.
+   Check two lines in it:
+   - `isolation: ok`. If it says `NOT isolated: …`, those plugins can still
+     answer in the group: fix `plugin_set` (above). The same warning is in
+     AstrBot's log at the first message after startup.
+   - `cleanup: running hourly`: retention runs on a clock, not on traffic.
 2. `/reg dump on` → starts saving raw events (local only, kept 3 days).
 3. In the group, over a day or so, have people do each of these at least once:
    - [ ] a normal text message, a reply to someone, an @ of the bot

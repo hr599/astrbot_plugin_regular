@@ -86,14 +86,18 @@ class Store:
     # ---- sessions ------------------------------------------------------
     def _session_for(self, scope_id: str, ts: int) -> int:
         row = self.db.execute(
-            """SELECT s.session_id, (SELECT MAX(ts) FROM messages m WHERE m.session_id=s.session_id)
+            """SELECT s.session_id,
+                      COALESCE((SELECT MAX(ts) FROM messages m WHERE m.session_id=s.session_id),
+                               s.started)
                FROM sessions s WHERE scope_id=? AND ended IS NULL
                ORDER BY started DESC LIMIT 1""",
             (scope_id,),
         ).fetchone()
         if row:
+            # an open session whose messages were purged falls back to its start time,
+            # so the 30-minute gap still applies
             sid, last = row[0], row[1]
-            if last is None or ts - last < SESSION_GAP_S:
+            if ts - last < SESSION_GAP_S:
                 return sid
             self.db.execute("UPDATE sessions SET ended=? WHERE session_id=?", (last, sid))
         return self.db.execute(
@@ -188,6 +192,12 @@ class Store:
         )
         self.db.execute("DELETE FROM messages WHERE ts<?", (cutoff_ts,))
         self.db.execute("DELETE FROM traces WHERE ts<?", (cutoff_ts,))
+        # close open sessions that retention just emptied
+        self.db.execute(
+            """UPDATE sessions SET ended=started WHERE ended IS NULL AND started<?
+               AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id=sessions.session_id)""",
+            (cutoff_ts,),
+        )
         return len(rows)
 
     # ---- traces --------------------------------------------------------

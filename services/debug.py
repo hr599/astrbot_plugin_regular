@@ -18,10 +18,21 @@ from typing import Any
 ID_KEYS = {
     "user_id", "group_id", "self_id", "target_id", "operator_id", "sender_id",
     "qq", "uin", "id", "message_id", "message_seq", "real_id", "real_seq", "peer_id",
+    "msg_id",
 }
-TEXT_KEYS = {
-    "text", "nickname", "card", "title", "name", "summary", "content", "raw_message",
-    "url", "file", "path", "file_id", "file_unique", "group_name", "remark", "data_str",
+# Allowlist: only these keys keep their values as-is. They describe the event's
+# *shape* (types, flags, timings) or are our own trace fields. Everything else
+# is masked whatever its length, because OneBot nests serialized payloads (json,
+# xml, markdown segments) under generic keys like "data" or "content".
+SAFE_KEYS = {
+    # OneBot structure
+    "post_type", "message_type", "notice_type", "sub_type", "request_type",
+    "meta_event_type", "type", "time", "font", "message_format", "emoji_id",
+    "count", "face_type", "duration", "file_size", "role", "level",
+    # our trace / dump notes
+    "at", "action", "gate", "notice", "stored", "mentions_bot", "replied_to",
+    "command_like", "injection_flags", "media", "m0", "recalled_found",
+    "poked_bot", "ended_at", "decision", "harness_version", "trace_id", "ts",
 }
 _SALT = "regular-debug"
 
@@ -33,15 +44,18 @@ def short_hash(v: Any) -> str:
 def redact(obj: Any, key: str | None = None) -> Any:
     if isinstance(obj, dict):
         return {k: redact(v, k) for k, v in obj.items()}
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [redact(v, key) for v in obj]
-    if key in ID_KEYS and obj not in (None, "", 0, "all"):
-        return short_hash(obj)
-    if key in TEXT_KEYS and isinstance(obj, str) and obj:
-        return f"<{len(obj)} chars>"
-    if isinstance(obj, str) and len(obj) > 40:
-        return f"<{len(obj)} chars>"
-    return obj
+    if obj is None or isinstance(obj, bool):
+        return obj
+    if key in SAFE_KEYS and isinstance(obj, (int, float, str)) and len(str(obj)) <= 64:
+        return obj
+    if key in ID_KEYS or isinstance(obj, (int, float)):
+        # unknown numbers may be QQ numbers under a key we didn't foresee
+        return short_hash(obj) if obj not in ("", "all") else obj
+    if isinstance(obj, str):
+        return f"<{len(obj)} chars>" if obj else ""
+    return f"<{type(obj).__name__}>"
 
 
 def redact_scope(scope_id: str) -> str:
@@ -119,7 +133,8 @@ def build_bundle(
             "IDs are salted hashes; message text is replaced by its length.\n"
             "Check it before sharing if you want to be sure.\n"
         ))
-        z.writestr("status.json", json.dumps(redact(status), ensure_ascii=False, indent=2))
+        # status is built by the plugin from counts and settings; no chat data in it
+        z.writestr("status.json", json.dumps(status, ensure_ascii=False, indent=2, default=str))
         z.writestr("traces.json", json.dumps(safe_traces, ensure_ascii=False, indent=1))
         z.writestr("raw_events.json", json.dumps(redact(raw_events), ensure_ascii=False, indent=1, default=str))
         if log_lines:

@@ -1,5 +1,6 @@
 """M0 tests. Run from the repo root:  python -m unittest discover -s tests -t ."""
 
+import asyncio
 import json
 import tempfile
 import time
@@ -9,10 +10,12 @@ from pathlib import Path
 
 from core.admin import AdminCommands
 from core.gate import GateConfig, gate
+from core.isolation import BUILTIN_COMMANDS_MODULE, PluginInfo, exposed_plugins
 from core.onebot import parse_onebot
 from core.perceive import injection_flags, perceive
 from core.pipeline import Pipeline
 from services.debug import RawDumper, build_bundle, redact
+from services.maintenance import Janitor
 from services.store import Store
 
 BOT, ME, FRIEND, GROUP, OTHER_GROUP = "10001", "20002", "30003", "555", "666"
@@ -210,6 +213,123 @@ class DebugTests(unittest.TestCase):
                 blob = "".join(z.read(n).decode() for n in z.namelist())
             self.assertNotIn("秘密内容", blob)
             self.assertNotIn(GROUP, blob.replace("GroupMessage", ""))
+
+
+
+class ReviewRegressionTests(unittest.TestCase):
+    """Findings from the PR #1 review."""
+
+    # [P2] short structured payloads leaked through the bundle
+    def test_bundle_masks_json_and_xml_segments(self):
+        segs = [
+            {"type": "json", "data": {"data": '{"text":"private words"}'}},
+            {"type": "xml", "data": {"data": "<msg>hidden phrase</msg>"}},
+            {"type": "markdown", "data": {"content": "md secret"}},
+            {"type": "text", "data": {"text": "hi"}},
+        ]
+        raw = group_msg(segs)
+        raw["group_code"] = 987654321  # an ID under a key nobody listed
+        with tempfile.TemporaryDirectory() as d:
+            dumper = RawDumper(Path(d) / "raw", enabled=True)
+            dumper.write(raw, {"action": "logged", "injection_flags": ["reveal"]})
+            path = build_bundle(Path(d) / "debug", status={}, traces=[], raw_events=dumper.tail())
+            with zipfile.ZipFile(path) as z:
+                blob = z.read("raw_events.json").decode()
+        for secret in ("private words", "hidden phrase", "md secret", '"hi"', "987654321"):
+            self.assertNotIn(secret, blob)
+        for shape in ('"json"', '"xml"', '"markdown"', '"reveal"', '"logged"'):
+            self.assertIn(shape, blob)
+
+    # [P2] retention depended on traffic; now it runs on a clock
+    def test_cleanup_runs_without_traffic_and_stops(self):
+        runs = []
+
+        async def scenario():
+            j = Janitor(lambda: runs.append(1), interval_s=0.01)
+            self.assertTrue(j.start())
+            await asyncio.sleep(0.05)
+            await j.stop()
+            n = len(runs)
+            await asyncio.sleep(0.03)
+            return n
+
+        n = asyncio.run(scenario())
+        self.assertGreaterEqual(n, 2)
+        self.assertEqual(len(runs), n)  # nothing ran after stop()
+
+    def test_cleanup_survives_a_failing_job(self):
+        calls = []
+
+        def job():
+            calls.append(1)
+            raise RuntimeError("disk full")
+
+        async def scenario():
+            j = Janitor(job, interval_s=0.01)
+            j.start()
+            await asyncio.sleep(0.04)
+            await j.stop()
+
+        with self.assertLogs("astrbot_plugin_regular", "ERROR"):
+            asyncio.run(scenario())
+        self.assertGreaterEqual(len(calls), 2)
+
+    def test_janitor_without_loop_defers(self):
+        self.assertFalse(Janitor(lambda: None).start())
+
+    # [P3] an emptied open session was reused after retention
+    def test_new_session_after_purge(self):
+        s = Store(":memory:")
+        s.scope(SCOPE, "aiocqhttp", "group")
+        now = int(time.time())
+        old = now - 40 * 86400
+        s.add_message(msg_id=f"{SCOPE}:1", scope_id=SCOPE, person_id=None, ts=old, text="old")
+        s.purge_before(now - 30 * 86400)
+        s.add_message(msg_id=f"{SCOPE}:2", scope_id=SCOPE, person_id=None, ts=now, text="new")
+        rows = s.db.execute("SELECT started, ended, n_msgs FROM sessions ORDER BY session_id").fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertIsNotNone(rows[0]["ended"])
+        self.assertEqual((rows[1]["started"], rows[1]["n_msgs"]), (now, 1))
+
+    def test_open_empty_session_respects_gap(self):
+        s = Store(":memory:")
+        s.scope(SCOPE, "aiocqhttp", "group")
+        t = int(time.time()) - 10000
+        s.db.execute("INSERT INTO sessions (scope_id, started) VALUES (?,?)", (SCOPE, t))
+        s.add_message(msg_id=f"{SCOPE}:1", scope_id=SCOPE, person_id=None, ts=t + 3600, text="x")
+        self.assertEqual(s.stats()["sessions"], 2)
+
+    # [P2] other plugins' command filters run before our listener
+    def _plugins(self):
+        return [
+            PluginInfo("astrbot_plugin_regular", "data.plugins.r.main", False, True, True),
+            PluginInfo("counter", "data.plugins.counter.main", False, True, True),
+            PluginInfo("scheduler_only", "data.plugins.s.main", False, True, False),
+            PluginInfo("disabled", "data.plugins.d.main", False, False, True),
+            PluginInfo("builtin_commands", BUILTIN_COMMANDS_MODULE, True, True, True),
+            PluginInfo("astrbot", "astrbot.builtin_stars.astrbot.main", True, True, True),
+        ]
+
+    def test_default_plugin_set_is_exposed(self):
+        self.assertEqual(
+            exposed_plugins(self._plugins(), plugin_set=["*"], self_name="astrbot_plugin_regular",
+                            builtin_commands_disabled=True),
+            ["counter"],
+        )
+
+    def test_isolated_plugin_set(self):
+        self.assertEqual(
+            exposed_plugins(self._plugins(), plugin_set=["astrbot_plugin_regular"],
+                            self_name="astrbot_plugin_regular", builtin_commands_disabled=True),
+            [],
+        )
+
+    def test_builtin_commands_bypass_plugin_set(self):
+        self.assertEqual(
+            exposed_plugins(self._plugins(), plugin_set=["astrbot_plugin_regular"],
+                            self_name="astrbot_plugin_regular", builtin_commands_disabled=False),
+            ["builtin_commands"],
+        )
 
 
 if __name__ == "__main__":

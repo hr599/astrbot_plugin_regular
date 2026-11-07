@@ -7,7 +7,6 @@ other plugins' commands.
 
 from __future__ import annotations
 
-import asyncio
 import time
 from pathlib import Path
 
@@ -15,12 +14,14 @@ from astrbot.api import AstrBotConfig, logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, StarTools, register
 
+from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.outbound import reply_admin_dm
 from .core.admin import AdminCommands
 from .core.gate import GateConfig
 from .core.pipeline import HARNESS_VERSION, Pipeline
 from .services.debug import RawDumper, build_bundle
+from .services.maintenance import Janitor
 from .services.store import Store
 
 PLUGIN_NAME = "astrbot_plugin_regular"
@@ -47,8 +48,10 @@ class Regular(Star):
         self.admin = AdminCommands(self._status, self._debug_bundle, self._set_dump)
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin)
         self._refresh_opt_outs()
-        self._n_since_purge = 0
-        self._purge()
+        # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
+        self.janitor = Janitor(self._purge, interval_s=3600)
+        self.janitor.start()  # no running loop yet? the first event starts it
+        self._isolation_checked = False
         if not self.gate_cfg.group_ids:
             logger.warning("[regular] no group_ids configured: watching nothing")
 
@@ -56,15 +59,17 @@ class Regular(Star):
     @filter.event_message_type(filter.EventMessageType.ALL, priority=PRIORITY)
     async def on_any(self, event: AstrMessageEvent):
         try:
+            if not self.janitor.running:
+                self.janitor.start()
+            if not self._isolation_checked:
+                self._isolation_checked = True
+                self._check_isolation()
             ev = to_chat_event(event)
             out = self.pipeline.handle(ev)
             if out.action != "drop" or out.reasons.get("gate") == "own_message":
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
             if out.admin_reply:
                 await reply_admin_dm(event, out.admin_reply)
-            self._n_since_purge += 1
-            if self._n_since_purge >= 500:
-                self._purge()
         except Exception:
             logger.exception("[regular] pipeline error (event stopped, nothing sent)")
         finally:
@@ -73,8 +78,29 @@ class Regular(Star):
             event.stop_event()
 
     # ---- admin helpers -------------------------------------------------
+    def _check_isolation(self) -> dict:
+        rep = isolation_report(self.context, PLUGIN_NAME)
+        if rep.get("isolated") is False:
+            logger.warning(
+                "[regular] NOT isolated: these plugins can still reply in the group "
+                f"before this one sees the message: {', '.join(rep['exposed'])}. "
+                f"Set AstrBot's plugin_set to only {PLUGIN_NAME} (docs/SETUP.md)."
+            )
+        elif rep.get("isolated") is None:
+            logger.warning(f"[regular] isolation check failed: {rep.get('error')}")
+        return rep
+
     def _status(self) -> dict:
+        iso = self._check_isolation()
+        if iso.get("isolated"):
+            iso_line = "ok (only this plugin answers messages)"
+        elif iso.get("isolated") is False:
+            iso_line = "NOT isolated: " + ", ".join(iso["exposed"]) + " (see SETUP.md: plugin_set)"
+        else:
+            iso_line = f"unknown ({iso.get('error')})"
         return {
+            "isolation": iso_line,
+            "cleanup": "running hourly" if self.janitor.running else "NOT running",
             "version": VERSION,
             "harness": HARNESS_VERSION,
             "mode": "M0 observe-only (never speaks)",
@@ -110,7 +136,6 @@ class Regular(Star):
         self.gate_cfg.opted_out_uids = self.store.opted_out_uids("aiocqhttp")
 
     def _purge(self) -> None:
-        self._n_since_purge = 0
         cutoff = int(time.time()) - self._retention_days() * 86400
         n = self.store.purge_before(cutoff)
         self.dumper.prune()
@@ -118,5 +143,5 @@ class Regular(Star):
             logger.info(f"[regular] retention: removed {n} old messages")
 
     async def terminate(self):
-        await asyncio.sleep(0)
+        await self.janitor.stop()
         self.store.close()
