@@ -1,0 +1,26 @@
+{
+  "group_ids": {
+    "description": "要观察的 QQ 群号",
+    "type": "list",
+    "hint": "只有这些群的消息会被记录。留空 = 什么都不看。",
+    "obvious_hint": true,
+    "default": []
+  },
+  "transcript_retention_days": {
+    "description": "聊天记录保留天数",
+    "type": "int",
+    "hint": "超过这个天数的原始聊天记录和 trace 会被删除（记忆卡片从 M3 起另算）。",
+    "default": 30
+  },
+  "raw_dump": {
+    "description": "记录原始事件（调试用）",
+    "type": "bool",
+    "hint": "把 LLBot 发来的原始事件存到本地数据目录，用于 M0 的实机检查。也可以私聊 /reg dump on|off 开关。",
+    "default": false
+  },
+  "raw_dump_keep_days": {
+    "description": "原始事件保留天数",
+    "type": "int",
+    "default": 3
+  }
+}
