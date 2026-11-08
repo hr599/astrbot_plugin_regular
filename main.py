@@ -18,11 +18,14 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
+from .adapter.llm import make_call, make_model_of
 from .adapter.outbound import reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
 from .bench.situations import forget_sender
 from .core.admin import AdminCommands
+from .core.budget import Budget, load_prices
+from .core.llm import ROLES, AsyncReply, ModelAdmin, ModelClient
 from .core.decide import DEFAULT_ALIASES
 from .core.gate import GateConfig
 from .core.labeling import Labeler
@@ -61,6 +64,17 @@ class Regular(Star):
         self.aliases = tuple(
             str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
         ) or DEFAULT_ALIASES
+        # models (task K): roles -> AstrBot provider ids; budgets as daily caps
+        self.budget = Budget(self.store, load_prices(), monthly={
+            "deepseek": float(config.get("budget_deepseek_monthly_cny", 50) or 0),
+            "openai": float(config.get("budget_openai_monthly_usd", 30) or 0),
+        }, usd_to_cny=float(config.get("usd_to_cny", 6.8) or 6.8))
+        self.models = ModelClient(
+            self.budget,
+            providers={r: str(config.get(f"provider_{r}", "") or "") for r in ROLES},
+            model_of=make_model_of(context),
+            call=make_call(context),
+        )
         self.outbox = Outbox(str(config.get("send_mode", "off") or "off"))
         self._seed_send_cap()
         self._tasks: set[asyncio.Task] = set()
@@ -73,6 +87,7 @@ class Regular(Star):
                                              bot_uids=self.gate_cfg.bot_uids),
             people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
                                save_paused=self._save_paused, forget_files=self._forget_files),
+            models=ModelAdmin(self.models, self.budget),
             sender=SendAdmin(self.outbox, watched=lambda: self.gate_cfg.group_ids,
                              paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
                              scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}"),
@@ -99,7 +114,9 @@ class Regular(Star):
             out = self.pipeline.handle(ev)
             if out.action != "drop" or out.reasons.get("gate") == "own_message":
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
-            if out.admin_reply:
+            if isinstance(out.admin_reply, AsyncReply):
+                await reply_admin_dm(event, await out.admin_reply.make())
+            elif out.admin_reply:
                 await reply_admin_dm(event, out.admin_reply)
             self._start_queued()
         except Exception:

@@ -17,7 +17,7 @@ try:  # inside the plugin package
 except ImportError:  # repo root on sys.path (tests, CLI)
     from core.perceive import is_command_like as _is_command_like
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
 # when its message is purged or recalled, unless it was saved into a recording), and
@@ -43,6 +43,23 @@ MIGRATIONS = {
     ALTER TABLE evidence ADD COLUMN author_id INTEGER;
     UPDATE evidence SET author_id=(SELECT person_id FROM messages m WHERE m.msg_id=evidence.msg_id)
       WHERE author_id IS NULL;
+    """,
+    # v4 (task K): a ledger of model calls (counts and cost, never text) for the
+    # daily budget caps, and a response cache for offline/bench calls. The cache
+    # can hold text derived from group messages, so it follows transcript
+    # retention and is emptied by /reg forget.
+    4: """
+    CREATE TABLE model_calls (
+      ts INTEGER NOT NULL, role TEXT NOT NULL, model TEXT NOT NULL, bucket TEXT NOT NULL,
+      input_other INTEGER NOT NULL DEFAULT 0, input_cached INTEGER NOT NULL DEFAULT 0,
+      output INTEGER NOT NULL DEFAULT 0, cost REAL NOT NULL DEFAULT 0, currency TEXT NOT NULL,
+      ok INTEGER NOT NULL DEFAULT 1, cached_response INTEGER NOT NULL DEFAULT 0, latency_ms INTEGER
+    );
+    CREATE INDEX model_calls_bucket_ts ON model_calls (bucket, ts);
+    CREATE TABLE llm_cache (
+      key TEXT PRIMARY KEY, model TEXT NOT NULL, created INTEGER NOT NULL,
+      text TEXT NOT NULL, usage TEXT
+    );
     """,
 }
 SESSION_GAP_S = 30 * 60  # a pause this long starts a new session
@@ -409,6 +426,8 @@ class Store:
             )
         self.db.execute("DELETE FROM messages WHERE ts<?", (cutoff_ts,))
         self.db.execute("DELETE FROM traces WHERE ts<?", (cutoff_ts,))
+        self.db.execute("DELETE FROM llm_cache WHERE created<?", (cutoff_ts,))
+        self.db.execute("DELETE FROM model_calls WHERE ts<?", (cutoff_ts - 400 * 86400,))  # counts only; a year+ for the trend
         # close open sessions that retention just emptied
         self.db.execute(
             """UPDATE sessions SET ended=started WHERE ended IS NULL AND started<?
@@ -416,6 +435,14 @@ class Store:
             (cutoff_ts,),
         )
         return len(rows)
+
+    # ---- model response cache (task K) ------------------------------------
+    def cache_get(self, key: str):
+        return self.db.execute("SELECT text, usage FROM llm_cache WHERE key=?", (key,)).fetchone()
+
+    def cache_put(self, key: str, model: str, text: str, usage: str, ts: int) -> None:
+        self.db.execute("INSERT OR REPLACE INTO llm_cache (key, model, created, text, usage) VALUES (?,?,?,?,?)",
+                        (key, model, ts, text, usage))
 
     # ---- forget / opt-out (admin only, from the admin's DM) ----------------
     def person_id_of(self, platform: str, uid: str) -> int | None:
@@ -497,6 +524,8 @@ class Store:
                 db.execute("DELETE FROM claims WHERE claim_id=?", (cid,))
             # audit trails that could restore or show them
             runs = self._clear_audits(lambda blob: _mentions(blob, pid, mset, gone))
+            # cached model answers can quote anyone and aren't attributed: drop them all
+            db.execute("DELETE FROM llm_cache")
             # traces that name them as a reactor or as the one answered (task D signals)
             db.execute("""DELETE FROM traces WHERE json_valid(reasons) AND
                           (json_extract(reasons, '$.actor')=? OR json_extract(reasons, '$.signals.answers')=?)""",
