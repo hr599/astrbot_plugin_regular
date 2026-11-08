@@ -78,6 +78,19 @@ class PipelineSignalTests(unittest.TestCase):
     def msg(self, text, uid=FRIEND, mid=1, dt=0, segs=None):
         return self.p.handle(ev(group_msg(segs or text, uid=uid, mid=mid, ts=self.t + dt)))
 
+    def test_name_address_counts_as_directed(self):
+        # PR #10 review: "小灯，你记错了" is a correction of the bot, like the @ version
+        p = Pipeline(self.s, GateConfig(group_ids={GROUP}), aliases=("小灯", "灯"))
+        out = p.handle(ev(group_msg("小灯，你记错了，不对", mid=1, ts=self.t)))
+        self.assertEqual(out.reasons["shadow"]["address_kind"], "name")
+        self.assertEqual(out.reasons["shadow"]["would"], "quiet")  # policy unchanged
+        self.assertIn("correction_of_bot", out.reasons["signals"]["cues"])
+        self.assertGreater(out.reasons["signals"]["salience"], 0)
+        out = p.handle(ev(group_msg("小灯，闭嘴吧", mid=2, ts=self.t + 5)))
+        self.assertTrue(out.reasons["signals"].get("rude_to_bot"))
+        out = p.handle(ev(group_msg("开灯 闭嘴吧", mid=3, ts=self.t + 10)))  # not a name address
+        self.assertFalse(out.reasons["signals"].get("rude_to_bot"))
+
     def test_salience_stored_and_traced(self):
         out = self.msg("哈哈哈哈 笑死", mid=1)
         self.assertIn("laughter", out.reasons["signals"]["cues"])

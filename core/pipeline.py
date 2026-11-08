@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide
+from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, name_addressed
 from .gate import GateConfig, gate
 from .perceive import perceive
 from .signals import compute as compute_signals, heat_step
@@ -41,7 +41,9 @@ class Pipeline:
 
     def _signals(self, ev: ChatEvent, p, pid: int, reply_to_bot: bool, from_bot: bool) -> dict[str, Any]:
         """Cheap per-message signals (task D). Record-only: stored and traced, acted on by nobody yet."""
-        addressed = p.mentions_bot or reply_to_bot
+        # directed at 阿灯: @, quote, or its configured name (same rule as decide, so
+        # 开灯/灯光 don't count). Record-only: the baseline still stays quiet on a name.
+        addressed = p.mentions_bot or reply_to_bot or name_addressed(p.text, self.aliases)
         depth = self.store.reply_depth(p.reply_to)
         sig = compute_signals(p.text, addressed=addressed, reply_depth=depth)
         out = sig.to_trace()
