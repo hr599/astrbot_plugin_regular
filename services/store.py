@@ -14,10 +14,13 @@ from typing import Any
 
 SCHEMA_VERSION = 2
 
-# v2 (M1): your labels for bench moments. Kept apart from transcripts; a label
-# goes when its message is purged, unless it was saved into a bench recording.
+# v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
+# when its message is purged or recalled, unless it was saved into a recording), and
+# messages.reply_to_bot, because the bot's own messages are never stored, so a quote
+# of the bot can only be recognised from the quoted sender at arrival time.
 MIGRATIONS = {
     2: """
+    ALTER TABLE messages ADD COLUMN reply_to_bot INTEGER NOT NULL DEFAULT 0;
     CREATE TABLE labels (
       msg_id     TEXT PRIMARY KEY REFERENCES messages ON DELETE CASCADE,
       addressed  INTEGER NOT NULL CHECK (addressed IN (0, 1)),
@@ -54,6 +57,22 @@ class Store:
             self.db.executescript(
                 "BEGIN;\n" + MIGRATIONS[target] + f"\nPRAGMA user_version={target};\nCOMMIT;"
             )
+            if target == 2:
+                # command-like messages are no longer stored (design doc: they never
+                # reach memory); remove the ones M0 logged
+                self.drop_command_like()
+
+    def drop_command_like(self) -> int:
+        rows = self.db.execute("SELECT rowid, msg_id, text FROM messages WHERE is_command_like=1").fetchall()
+        for r in rows:
+            if r["text"]:
+                self.db.execute(
+                    "INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', ?, ?)",
+                    (r["rowid"], r["text"]),
+                )
+            self.db.execute("DELETE FROM message_media WHERE msg_id=?", (r["msg_id"],))
+        self.db.execute("DELETE FROM messages WHERE is_command_like=1")
+        return len(rows)
 
     def close(self) -> None:
         self.db.close()
@@ -105,7 +124,7 @@ class Store:
 
     def messages_in(self, scope_id: str, since_ts: int = 0, until_ts: int | None = None) -> list[sqlite3.Row]:
         """Messages oldest first, with the sender's latest display name."""
-        sql = """SELECT m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
+        sql = """SELECT m.rowid AS rid, m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
                               ORDER BY a.last_seen DESC LIMIT 1) AS sender_name
                  FROM messages m WHERE m.scope_id=? AND m.ts>=?"""
         args: list = [scope_id, since_ts]
@@ -113,6 +132,26 @@ class Store:
             sql += " AND m.ts<=?"
             args.append(until_ts)
         return self.db.execute(sql + " ORDER BY m.ts, m.rowid", args).fetchall()
+
+    def before(self, msg_id: str, n: int) -> list[sqlite3.Row]:
+        """The n messages that arrived before msg_id in the same scope, oldest first,
+        by (ts, rowid): same-second messages count only if they were stored earlier."""
+        t = self.db.execute("SELECT scope_id, ts, rowid FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
+        if not t:
+            return []
+        rows = self.db.execute(
+            """SELECT m.rowid AS rid, m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
+                              ORDER BY a.last_seen DESC LIMIT 1) AS sender_name
+               FROM messages m WHERE m.scope_id=? AND (m.ts<? OR (m.ts=? AND m.rowid<?))
+               ORDER BY m.ts DESC, m.rowid DESC LIMIT ?""",
+            (t["scope_id"], t["ts"], t["ts"], t["rowid"], n),
+        ).fetchall()
+        return rows[::-1]
+
+    def labelable(self, msg_id: str) -> bool:
+        """Still there, not recalled, has text (PR #4 review: check before every answer)."""
+        r = self.db.execute("SELECT recalled, text FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
+        return bool(r) and not r["recalled"] and bool(r["text"])
 
     def scope_ids(self, kind: str = "group") -> list[str]:
         return [r[0] for r in self.db.execute("SELECT scope_id FROM scopes WHERE kind=?", (kind,))]
@@ -138,10 +177,12 @@ class Store:
 
     def unlabeled(self, scope_id: str, limit: int = 2000) -> list[sqlite3.Row]:
         return self.db.execute(
-            """SELECT m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
+            """SELECT m.rowid AS rid, m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
                               ORDER BY a.last_seen DESC LIMIT 1) AS sender_name
                FROM messages m
                WHERE m.scope_id=? AND m.recalled=0 AND m.is_bot=0 AND m.text<>''
+                 AND m.reply_to_bot=0
+                 AND (m.mentions IS NULL OR m.mentions NOT LIKE '%"bot"%')
                  AND m.msg_id NOT IN (SELECT msg_id FROM labels)
                  AND m.msg_id NOT IN (SELECT msg_id FROM label_skips)
                ORDER BY m.ts DESC LIMIT ?""",
@@ -192,6 +233,7 @@ class Store:
         mentions: list[str] | None = None,
         is_bot: bool = False,
         is_command_like: bool = False,
+        reply_to_bot: bool = False,
     ) -> bool:
         """Returns False if the message was already stored (platform re-delivery)."""
         if self.db.execute("SELECT 1 FROM messages WHERE msg_id=?", (msg_id,)).fetchone():
@@ -199,12 +241,12 @@ class Store:
         sid = self._session_for(scope_id, ts)
         cur = self.db.execute(
             """INSERT INTO messages (msg_id, scope_id, session_id, person_id, ts, reply_to,
-                 mentions, text, is_bot, is_command_like)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                 mentions, text, is_bot, is_command_like, reply_to_bot)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 msg_id, scope_id, sid, person_id, ts, reply_to,
                 json.dumps(mentions, ensure_ascii=False) if mentions else None,
-                text, int(is_bot), int(is_command_like),
+                text, int(is_bot), int(is_command_like), int(reply_to_bot),
             ),
         )
         self.db.execute("INSERT INTO messages_fts (rowid, text) VALUES (?,?)", (cur.lastrowid, text))

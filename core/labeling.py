@@ -1,11 +1,17 @@
 """Labeling bench moments from your DM: /reg label.
 
-The bot shows one logged moment with a little context and asks two things at
-once: was it meant for 阿灯, and what would a regular do? Answers become the
-bench's ground truth. Sampling leans toward the moments that matter (anything
-that might be addressed to the bot, questions, quotes) so a few dozen labels
-go a long way; plain chatter still gets sampled so the "stay quiet" side is
-measured too.
+The bot sends a batch of up to 5 logged moments, each with a little context, and
+you answer them in one line (`/reg label 5 5 3 4 5`). Each answer says two things
+at once: was it meant for 阿灯, and what would a quiet regular like 阿灯 do?
+
+- Obvious moments aren't asked: an @ of the bot or a quote of its message is
+  always for it and always answered, by rule.
+- Sampling leans toward moments that might be for the bot, questions and quotes,
+  but plain chatter is still sampled so the "stay quiet" side is measured.
+- Context shows only what had arrived before the moment, in storage order, the
+  same view the replay gives the policy (PR #4 review).
+- Every answer and skip re-checks that its message is still there and not
+  recalled; a recalled or expired one is dropped, never labeled (PR #4 review).
 """
 
 from __future__ import annotations
@@ -24,16 +30,20 @@ CHOICES = {
     "5": (False, "quiet"),
 }
 
-PROMPT = (
-    "这条（→）是冲着阿灯说的吗？一个老熟人会怎么做？\n"
-    "1 冲着它，该回\n"
-    "2 冲着它，点个表情就够\n"
-    "3 没冲着它，但会插一句\n"
-    "4 没冲着它，点个表情\n"
-    "5 没冲着它，安静\n"
-    "s 跳过\n"
-    "回复 /reg label 1-5 或 s"
+GUIDE = (
+    "标注说明（按阿灯的性格来判断，不是按你自己会不会说话）\n"
+    "阿灯话少，大概只占群消息的一成。问自己：一个话少的老熟人，这时候会怎么做？\n"
+    "1 冲着它说的，该回\n"
+    "2 冲着它说的，点个表情就够\n"
+    "3 不是冲着它，但它会插一句（话题它真感兴趣、正好能接上）\n"
+    "4 不是冲着它，顶多点个表情\n"
+    "5 不是冲着它，安静\n"
+    "s 跳过（看不懂、拿不准都可以跳）\n"
+    "\"冲着它\" = 叫它名字跟它说话、问它问题、接它的话。只是提到它不算。\n"
+    "@它、引用它的消息不会出现在这里，那些规则上一定回。"
 )
+
+ANSWER_HINT = "回复 /reg label 加每条的答案，比如 /reg label 5 5 3 4 5（s 跳过）\n/reg label help 看说明"
 
 _QUESTION = ("?", "？", "吗", "呢", "啥", "什么", "怎么", "谁", "哪")
 
@@ -42,78 +52,41 @@ def tier(row, aliases=DEFAULT_ALIASES) -> str:
     """A: might be for the bot. B: a question or a quote. C: the rest."""
     mentions = json.loads(row["mentions"]) if row["mentions"] else []
     text = row["text"] or ""
-    if "bot" in mentions or name_addressed(text, aliases):
+    if name_addressed(text, aliases):
         return "A"
     if row["reply_to"] or mentions or any(q in text for q in _QUESTION):
         return "B"
     return "C"
 
 
-def pick(rows, rng: random.Random, aliases=DEFAULT_ALIASES):
-    if not rows:
-        return None
+def pick(rows, rng: random.Random, aliases=DEFAULT_ALIASES, k: int = 5) -> list:
     by: dict[str, list] = {"A": [], "B": [], "C": []}
     for r in rows:
         by[tier(r, aliases)].append(r)
+    for t in by:
+        rng.shuffle(by[t])
     weights = {"A": 0.5, "B": 0.3, "C": 0.2}
-    avail = [t for t in "ABC" if by[t]]
-    t = rng.choices(avail, weights=[weights[x] for x in avail])[0]
-    return rng.choice(by[t])
+    out = []
+    while len(out) < k:
+        avail = [t for t in "ABC" if by[t]]
+        if not avail:
+            break
+        t = rng.choices(avail, weights=[weights[x] for x in avail])[0]
+        out.append(by[t].pop())
+    return sorted(out, key=lambda r: (r["ts"], r["rid"]))
+
+
+def parse_answers(arg: str) -> list[str] | None:
+    """'5 5 3 4 5', '55345' or '5,5,3' -> ['5', '5', ...]; None if anything's invalid."""
+    s = arg.replace(",", " ").replace("，", " ").strip().lower()
+    toks = s.split() if " " in s else list(s)
+    if not toks or any(t not in CHOICES and t != "s" for t in toks):
+        return None
+    return toks
 
 
 def _hhmm(ts: int) -> str:
-    # UTC+8: the group's clock
-    return time.strftime("%H:%M", time.gmtime(ts + 8 * 3600))
-
-
-class Labeler:
-    def __init__(self, store, *, aliases=DEFAULT_ALIASES, rng: random.Random | None = None,
-                 context: int = 6):
-        self.store = store
-        self.aliases = aliases
-        self.rng = rng or random.Random()
-        self.context = context
-        self.pending: str | None = None  # msg_id currently shown
-
-    def _scope(self) -> str | None:
-        ids = self.store.scope_ids("group")
-        return ids[0] if ids else None
-
-    def next(self) -> str:
-        scope = self._scope()
-        if not scope:
-            return "还没有记录到群消息。"
-        row = pick(self.store.unlabeled(scope), self.rng, self.aliases)
-        if row is None:
-            self.pending = None
-            return "没有待标注的消息了 👍"
-        self.pending = row["msg_id"]
-        before = self.store.messages_in(scope, row["ts"] - 3600, row["ts"])
-        lines = []
-        shown = [r for r in before if r["msg_id"] != row["msg_id"]][-self.context:]
-        for r in shown + [row]:
-            name = _name(r)
-            text = "[已撤回]" if r["recalled"] else r["text"]
-            mark = "→ " if r["msg_id"] == row["msg_id"] else "  "
-            lines.append(f"{mark}{_hhmm(r['ts'])} {name}: {text}")
-        n = self.store.stats()["labels"]
-        return "\n".join(lines) + f"\n\n{PROMPT}\n（已标 {n} 条）"
-
-    def answer(self, arg: str) -> str:
-        if not self.pending:
-            return "现在没有待回答的消息。发 /reg label 开始。"
-        arg = arg.strip().lower()
-        if arg == "s":
-            self.store.skip_label(self.pending)
-            return "跳过了。\n\n" + self.next()
-        if arg not in CHOICES:
-            return "回复 1-5 或 s。"
-        if not self.store.has_message(self.pending):
-            self.pending = None
-            return "这条已经不在了（撤回或过期）。\n\n" + self.next()
-        addressed, should = CHOICES[arg]
-        self.store.set_label(self.pending, addressed, should)
-        return "记下了。\n\n" + self.next()
+    return time.strftime("%H:%M", time.gmtime(ts + 8 * 3600))  # the group's clock, UTC+8
 
 
 def _name(row) -> str:
@@ -122,3 +95,70 @@ def _name(row) -> str:
     except (IndexError, KeyError):
         name = None
     return name or f"#{row['person_id']}"
+
+
+class Labeler:
+    def __init__(self, store, *, aliases=DEFAULT_ALIASES, rng: random.Random | None = None,
+                 context: int = 3, batch: int = 5):
+        self.store = store
+        self.aliases = aliases
+        self.rng = rng or random.Random()
+        self.context = context
+        self.batch = batch
+        self.pending: list[str] = []  # msg_ids of the batch on screen, in order
+        self.shown_guide = False
+
+    def _scope(self) -> str | None:
+        ids = self.store.scope_ids("group")
+        return ids[0] if ids else None
+
+    def _line(self, r, mark: str) -> str:
+        text = "[已撤回]" if r["recalled"] else r["text"]
+        return f"{mark}{_hhmm(r['ts'])} {_name(r)}: {text}"
+
+    def next(self) -> str:
+        scope = self._scope()
+        if not scope:
+            return "还没有记录到群消息。"
+        rows = pick(self.store.unlabeled(scope), self.rng, self.aliases, self.batch)
+        self.pending = [r["msg_id"] for r in rows]
+        if not rows:
+            return "没有待标注的消息了 👍"
+        blocks = []
+        for i, r in enumerate(rows, 1):
+            ctx = [self._line(c, "   ") for c in self.store.before(r["msg_id"], self.context)]
+            blocks.append(f"【{i}】\n" + "\n".join(ctx + [self._line(r, " → ")]))
+        head = ""
+        if not self.shown_guide:
+            head = GUIDE + "\n\n"
+            self.shown_guide = True
+        n = self.store.stats()["labels"]
+        return head + "\n\n".join(blocks) + f"\n\n{ANSWER_HINT}\n（已标 {n} 条）"
+
+    def answer(self, arg: str) -> str:
+        if arg.strip().lower() in ("help", "说明"):
+            return GUIDE + "\n\n" + ANSWER_HINT
+        if not self.pending:
+            return "现在没有待回答的题。发 /reg label 开始。"
+        toks = parse_answers(arg)
+        if toks is None:
+            return "每条回 1-5 或 s，比如 /reg label 5 5 3 4 5"
+        if len(toks) != len(self.pending):
+            return f"这一批有 {len(self.pending)} 条，收到 {len(toks)} 个答案。请按顺序每条一个。"
+        saved = skipped = gone = 0
+        for mid, t in zip(self.pending, toks):
+            if not self.store.labelable(mid):  # recalled or expired since it was shown
+                gone += 1
+                continue
+            if t == "s":
+                self.store.skip_label(mid)
+                skipped += 1
+            else:
+                addressed, should = CHOICES[t]
+                self.store.set_label(mid, addressed, should)
+                saved += 1
+        self.pending = []
+        note = f"记下 {saved} 条" + (f"，跳过 {skipped}" if skipped else "")
+        if gone:
+            note += f"，{gone} 条已撤回或过期，没有记"
+        return note + "。\n\n" + self.next()

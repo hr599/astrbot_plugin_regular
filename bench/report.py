@@ -65,10 +65,18 @@ def _metric_rows(m: dict, source: str) -> str:
             None if share is None else share < 0.10)
     row("explicit addresses (@, quote, poke)", m["explicit"])
     row("explicit missed (hard gate: 0)", m["explicit_missed"], m["explicit_missed"] == 0)
+    if source != "fixture":
+        row("labels used for tuning (dev) / held out (test)",
+            f"{m['labeled_dev']} / {m['labeled'] - m['labeled_dev']}")
+    held = m.get("held_out") or {}
     for k in ("addressed_precision", "addressed_recall", "action_agreement",
               "speak_precision", "speak_recall"):
         v = m[k]
-        row(k.replace("_", " "), "n/a (no labels yet)" if v is None else f"{v:.0%}")
+        txt = "n/a (no labels yet)" if v is None else f"{v:.0%}"
+        if source != "fixture":
+            hv = held.get(k)
+            txt += "  ·  held out: " + ("n/a" if hv is None else f"{hv:.0%}")
+        row(k.replace("_", " "), txt)
     for t, d in sorted(m["tags"].items()):
         row(f"tag {t}: would speak", f"{d['would_speak']} / {d['moments']} (judged in M2)")
     return "".join(rows)
@@ -106,6 +114,7 @@ def write_report(runs: list[Run], folder: Path, totals: dict) -> Path:
         f"<title>bench {stamp}</title><style>{_CSS}</style></head><body>",
         f"<h1>Bench run {stamp}</h1>",
         f"<div class='meta'>policy {_e(runs[0].policy if runs else '?')} · "
+        f"aliases {_e(' / '.join(totals.get('params', {}).get('aliases', [])))} · "
         f"{len(runs)} recording(s) · {totals['moments']} moments · "
         f"explicit missed: {totals['explicit_missed']} · "
         "contains real messages: keep it local</div>",
@@ -124,6 +133,6 @@ def write_report(runs: list[Run], folder: Path, totals: dict) -> Path:
     path.write_text("".join(parts), encoding="utf-8")
     (folder / f"bench-{stamp}.json").write_text(
         json.dumps({"totals": totals, "runs": [{"name": r.recording.name, "source": r.recording.source,
-                                                "metrics": r.metrics} for r in runs]},
+                                                "metrics": r.metrics, "params": r.params} for r in runs]},
                    ensure_ascii=False, indent=1), encoding="utf-8")
     return path

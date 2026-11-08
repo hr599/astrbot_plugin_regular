@@ -12,9 +12,13 @@ from typing import Any, Callable
 
 from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide
 from .situations import Recording
+from .splits import is_test
 
 CONTEXT = 30  # moments of context handed to the policy
-EXPLICIT_THRESHOLD = 0.75  # same as decide's reply threshold
+# "Did it think this was meant for it?" A likely address (its name) counts as
+# detected even though the baseline doesn't reply to it; replies are scored by
+# action agreement separately.
+ADDRESSED_THRESHOLD = 0.5
 
 
 @dataclass
@@ -30,6 +34,7 @@ class Run:
     policy: str
     steps: list[Step]
     metrics: dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)  # what the policy ran with
 
 
 def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
@@ -39,7 +44,7 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
         d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases)
         steps.append(Step(m, d, rec.labels.get(m.msg_id)))
         history.append(m)
-    run = Run(rec, policy_version, steps)
+    run = Run(rec, policy_version, steps, params={"aliases": list(aliases)})
     run.metrics = score(run)
     return run
 
@@ -61,21 +66,11 @@ def score(run: Run) -> dict[str, Any]:
     explicit = [s for s in run.steps if s.msg.mentions_bot or s.msg.reply_to_bot or s.msg.poke_bot]
     missed = [s.msg.msg_id for s in explicit if s.decision.action == "quiet"]
 
-    # addressed-to-bot detection vs your labels
-    lab = [s for s in people if s.label is not None]
-    tp = sum(1 for s in lab if s.label["addressed"] and s.decision.addressed >= EXPLICIT_THRESHOLD)
-    fp = sum(1 for s in lab if not s.label["addressed"] and s.decision.addressed >= EXPLICIT_THRESHOLD)
-    fn = sum(1 for s in lab if s.label["addressed"] and s.decision.addressed < EXPLICIT_THRESHOLD)
-
-    # action agreement vs labels: quiet / react / reply
-    confusion: dict[str, dict[str, int]] = {a: {b: 0 for b in ("quiet", "react", "reply")}
-                                           for a in ("quiet", "react", "reply")}
-    for s in lab:
-        confusion[s.label["should"]][s.decision.action] += 1
-    agree = sum(confusion[a][a] for a in confusion)
-    spoke_label = sum(1 for s in lab if s.label["should"] != "quiet")
-    spoke_both = sum(1 for s in lab if s.label["should"] != "quiet" and s.decision.action != "quiet")
-    spoke_pred = sum(1 for s in lab if s.decision.action != "quiet")
+    lab_all = [s for s in people if s.label is not None]
+    split = run.recording.source != "fixture"
+    lab = [s for s in lab_all if not (split and is_test(s.msg.msg_id))]  # dev side
+    held = [s for s in lab_all if split and is_test(s.msg.msg_id)]
+    st = _label_stats(lab)
 
     tags: dict[str, dict[str, int]] = {}
     for s in lab:
@@ -88,13 +83,38 @@ def score(run: Run) -> dict[str, Any]:
         "policy": run.policy,
         "moments": len(people),
         "pokes": len(pokes),
-        "labeled": len(lab),
+        "labeled": len(lab_all),
+        "labeled_dev": len(lab),
         "would_speak": len(speaks),
         # target: under about 10% of the group's messages in an active group
         "bot_share": _ratio(len(speaks), len(people) + len(speaks)),
         "explicit": len(explicit),
         "explicit_missed": len(missed),
         "explicit_missed_ids": missed[:20],
+        **st,  # dev-side label metrics: addressed P/R, action agreement, speak P/R, confusion
+        # held-out labels, never used for tuning; None when there are none yet
+        "held_out": ({"labeled": len(held), **_label_stats(held)} if held else None),
+        "tags": tags,
+        "gates": {
+            "explicit_never_missed": len(missed) == 0,
+            "heavy_crisis_argument": "pending M2 (judged on what it says)",
+        },
+    }
+
+
+def _label_stats(lab: list[Step]) -> dict[str, Any]:
+    tp = sum(1 for s in lab if s.label["addressed"] and s.decision.addressed >= ADDRESSED_THRESHOLD)
+    fp = sum(1 for s in lab if not s.label["addressed"] and s.decision.addressed >= ADDRESSED_THRESHOLD)
+    fn = sum(1 for s in lab if s.label["addressed"] and s.decision.addressed < ADDRESSED_THRESHOLD)
+    confusion: dict[str, dict[str, int]] = {a: {b: 0 for b in ("quiet", "react", "reply")}
+                                           for a in ("quiet", "react", "reply")}
+    for s in lab:
+        confusion[s.label["should"]][s.decision.action] += 1
+    agree = sum(confusion[a][a] for a in confusion)
+    spoke_label = sum(1 for s in lab if s.label["should"] != "quiet")
+    spoke_both = sum(1 for s in lab if s.label["should"] != "quiet" and s.decision.action != "quiet")
+    spoke_pred = sum(1 for s in lab if s.decision.action != "quiet")
+    return {
         "addressed_precision": _ratio(tp, tp + fp),
         "addressed_recall": _ratio(tp, tp + fn),
         "action_agreement": _ratio(agree, len(lab)),
@@ -103,11 +123,6 @@ def score(run: Run) -> dict[str, Any]:
         "speak_recall": _ratio(spoke_both, spoke_label),
         "speak_precision": _ratio(spoke_both, spoke_pred),
         "confusion": confusion,
-        "tags": tags,
-        "gates": {
-            "explicit_never_missed": len(missed) == 0,
-            "heavy_crisis_argument": "pending M2 (judged on what it says)",
-        },
     }
 
 
@@ -120,4 +135,5 @@ def merge(runs: list[Run]) -> dict[str, Any]:
             tot[k] += r.metrics[k]
     tot["bot_share"] = _ratio(tot["would_speak"], tot["moments"] + tot["would_speak"])
     tot["gates"] = {"explicit_never_missed": tot["explicit_missed"] == 0}
+    tot["params"] = runs[0].params if runs else {}
     return tot

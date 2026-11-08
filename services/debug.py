@@ -33,7 +33,7 @@ SAFE_KEYS = {
     "at", "action", "gate", "notice", "stored", "mentions_bot", "replied_to",
     "command_like", "injection_flags", "media", "m0", "mode", "shadow", "would", "addressed",
     "address_kind", "signals", "policy", "recalled_found",
-    "poked_bot", "reply_found", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
+    "poked_bot", "reply_found", "reply_to_bot", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
 }
 _SALT = "regular-debug"
 

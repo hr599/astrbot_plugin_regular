@@ -25,8 +25,11 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
     s = (f"[{name}] {m['moments']} 条 · 戳 {m['pokes']} · 会说话 {m['would_speak']} 次 ({share})\n"
          f"  明确叫它（@/引用/戳）{m['explicit']} 次，漏回 {gate}")
     if m["labeled"]:
-        s += (f"\n  已标 {m['labeled']}：判断对象 准 {_pct(m['addressed_precision'])} / "
+        s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}）：判断对象 准 {_pct(m['addressed_precision'])} / "
               f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}")
+        h = m.get("held_out")
+        if h:
+            s += f"\n  留出的 {h['labeled']} 条：动作一致 {_pct(h['action_agreement'])}"
     return s
 
 
@@ -55,7 +58,7 @@ def bench_command(store, data_dir: Path, args: list[str], *,
         return "没有可以重放的内容。"
     totals = merge(runs)
     report = write_report(runs, bench_dir / "runs", totals)
-    lines = [f"规则版本 {runs[0].policy}"] + [summary_line(r.recording.name, r.metrics) for r in runs]
+    lines = [f"规则版本 {runs[0].policy} · 称呼 {' / '.join(aliases)}"] + [summary_line(r.recording.name, r.metrics) for r in runs]
     lines.append(f"\n报告（本机打开，含聊天原文）：\n{report}")
     return "\n".join(lines)
 
@@ -66,9 +69,9 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     if not runs:
         return None
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
-    keep = ("policy", "moments", "pokes", "labeled", "would_speak", "bot_share", "explicit",
-            "explicit_missed", "addressed_precision", "addressed_recall", "action_agreement",
-            "speak_precision", "speak_recall", "confusion", "tags")
+    keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
+            "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
+            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags")
     return {
         "file": runs[-1].name,
         "totals": d["totals"],

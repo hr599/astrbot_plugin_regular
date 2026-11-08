@@ -42,6 +42,20 @@ def raw_text(segments: list[Segment]) -> str:
     return "".join(_s(s.data.get("text")) for s in segments if s.kind == "text")
 
 
+def reply_sender(components) -> str:
+    """sender_id of the first Reply component in AstrBot's normalised chain.
+
+    AstrBot's aiocqhttp adapter fetches every quoted message (get_msg) and puts its
+    sender on the Reply component; the raw OneBot reply segment has only the id.
+    Matched by class name so this module stays free of AstrBot imports."""
+    for c in components or []:
+        if type(c).__name__ == "Reply":
+            sid = getattr(c, "sender_id", None)
+            if sid not in (None, "", 0, "0"):
+                return str(sid)
+    return ""
+
+
 def parse_onebot(
     raw: dict[str, Any],
     *,

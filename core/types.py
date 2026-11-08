@@ -31,6 +31,11 @@ class ChatEvent:
     segments: list[Segment] = field(default_factory=list)
     raw_text: str = ""  # text segments joined, wake prefix NOT stripped
     is_admin: bool = False
+    # who wrote the quoted message, from AstrBot's Reply component (it fetches the
+    # quoted message with get_msg); "" when unknown. The raw OneBot reply segment
+    # only has the message id, and the bot's own messages are never stored, so this
+    # is how a quote of the bot is recognised (PR #4 review).
+    reply_sender_uid: str = ""
     # notices only
     notice_type: str = ""  # group_recall | friend_recall | poke | emoji_like | ...
     notice_target: str = ""  # message id or user id the notice is about
@@ -47,6 +52,7 @@ class Perceived:
 
     text: str  # rendered text with media placeholders
     reply_to: str | None  # stored msg_id of the replied message
+    reply_to_bot: bool  # the quoted message was the bot's
     mentions: list[str]  # platform uids, "all", or "bot"
     mentions_bot: bool
     is_command_like: bool

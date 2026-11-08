@@ -1,10 +1,12 @@
 """Decide: should the bot stay quiet, react, or reply to this moment?
 
 M1 ships the *baseline* policy only. It is deliberately simple so every M2
-version has something honest to beat on the bench:
+version has something honest to beat on the bench. It follows the design doc's
+"Who's talking to whom":
 
-- an explicit address (@ the bot, quoting a bot message, poking the bot) -> reply
-- a name address (阿灯 / 灯灯, or 灯 used as a vocative) -> reply
+- direct: @ the bot, quoting a bot message, poking the bot -> always reply
+- likely: its name (阿灯 / 灯灯, or 灯 used as a vocative) raises the addressed
+  score but does NOT force a reply, "because people also talk about the bot"
 - everything else -> quiet
 
 No model calls, no time-of-day rhythm yet. `now` is passed in (never read from
@@ -80,7 +82,7 @@ def addressed(m: Msg, aliases: tuple[str, ...] = DEFAULT_ALIASES) -> tuple[float
     if why:
         return 1.0, "explicit", why
     if name_addressed(m.text, aliases):
-        return 0.8, "name", ["name"]
+        return 0.6, "name", ["name"]
     return 0.0, "none", []
 
 
@@ -90,7 +92,7 @@ def decide(
     now: int,
     *,
     aliases: tuple[str, ...] = DEFAULT_ALIASES,
-    threshold: float = 0.75,
+    threshold: float = 0.9,
 ) -> Decision:
     """`context` = recent messages before `m`, oldest first (unused by the
     baseline; M2 policies read it). `now` = the clock the caller supplies."""
@@ -98,8 +100,9 @@ def decide(
         return Decision("quiet", 0.0, "none", {"rule": "own_message"})
     score, kind, why = addressed(m, aliases)
     action = "reply" if score >= threshold else "quiet"
+    rule = "direct" if action == "reply" else ("likely_not_forced" if kind == "name" else "not_addressed")
     return Decision(
         action, score, kind,
-        {"rule": "addressed" if action == "reply" else "not_addressed", "signals": why,
+        {"rule": rule, "signals": why,
          "context_len": len(context), "now": now},
     )

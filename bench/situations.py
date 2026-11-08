@@ -52,7 +52,8 @@ def from_store(store, scope_id: str, *, since_ts: int = 0, until_ts: int | None 
             msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
             text="" if r["recalled"] else r["text"],
             mentions_bot="bot" in mentions, reply_to=r["reply_to"],
-            reply_to_bot=store.is_bot_message(r["reply_to"]), is_bot=bool(r["is_bot"]),
+            reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
+            is_bot=bool(r["is_bot"]),
         ))
     msgs += _pokes_from_traces(store, scope_id, since_ts, until_ts)
     msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))

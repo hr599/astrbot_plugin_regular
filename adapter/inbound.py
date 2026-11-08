@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..core.onebot import parse_onebot, parse_segments, raw_text
+from ..core.onebot import parse_onebot, parse_segments, raw_text, reply_sender
 from ..core.types import ChatEvent
 
 
@@ -22,7 +22,12 @@ def to_chat_event(event) -> ChatEvent:
     is_admin = bool(event.is_admin())
     raw = raw_payload(event)
     if raw is not None and raw.get("post_type"):
-        return parse_onebot(raw, platform=platform, scope_id=scope_id, is_admin=is_admin)
+        ev = parse_onebot(raw, platform=platform, scope_id=scope_id, is_admin=is_admin)
+        try:
+            ev.reply_sender_uid = reply_sender(event.get_messages())
+        except Exception:
+            pass
+        return ev
 
     # Fallback for non-OneBot platforms: AstrBot's normalized fields only.
     mo = event.message_obj
