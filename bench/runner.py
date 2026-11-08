@@ -7,10 +7,11 @@ system clock, so the same recording always gives the same result.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide, limits
+from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide, limits, tier_of
 from .situations import Recording
 from .splits import is_test
 
@@ -106,7 +107,10 @@ def score(run: Run) -> dict[str, Any]:
                    and "no_loop" in s.label.get("expect", []) and s.label["should"] == "quiet"
                    and s.decision.action != "quiet"]
 
+    implied = implied_rates(run, lab) if split else None
+
     return {
+        "implied": implied,
         "policy": run.policy,
         "moments": len(people),
         "pokes": len(pokes),
@@ -154,6 +158,74 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
         "speak_recall": _ratio(spoke_both, spoke_label),
         "speak_precision": _ratio(spoke_both, spoke_pred),
         "confusion": confusion,
+    }
+
+
+def implied_rates(run: Run, lab: list[Step]) -> dict[str, Any] | None:
+    """What your labels say about how often 阿灯 would act across ALL the chat, not
+    just the labelled sample. /reg label over-samples name mentions and questions
+    (tiers A/B, core/labeling.pick), so the raw share of non-quiet labels runs high.
+    Here each tier's rate from your labels is weighted by that tier's share of the
+    real chat (post-stratification). Direct @/quote moments always get a reply and
+    are added back. Dev labels only, like everything that informs tuning.
+
+    reply_share is comparable to bot share: 阿灯's replies as a share of all
+    messages in the chat. react_rate: reactions per human message."""
+    aliases = tuple(run.params.get("aliases") or DEFAULT_ALIASES)
+    people = [s for s in run.steps if s.msg.kind == "message" and not s.msg.is_bot]
+    eligible = [s for s in people if s.msg.text and not s.msg.mentions_bot and not s.msg.reply_to_bot]
+    if not eligible or not lab:
+        return None
+    t = lambda m: tier_of(m.text, m.reply_to, m.mentions_other, aliases)  # noqa: E731
+    pop: dict[str, int] = {}
+    for s in eligible:
+        pop[t(s.msg)] = pop.get(t(s.msg), 0) + 1
+    by: dict[str, list[str]] = {}
+    for s in lab:
+        if s.msg.text and not s.msg.mentions_bot and not s.msg.reply_to_bot:
+            by.setdefault(t(s.msg), []).append(s.label["should"])
+    pooled = [x for v in by.values() for x in v]
+    if not pooled:
+        return None
+    def estimate(by_tier: dict[str, list[str]]) -> tuple[float, float, dict[str, Any]]:
+        pool = [x for v in by_tier.values() for x in v]
+        rep = rea = 0.0
+        info = {}
+        for k, n in pop.items():
+            got = by_tier.get(k) or []
+            src = got if len(got) >= 5 else pool  # too few labels in a tier: borrow the pooled rate
+            w = n / len(eligible)
+            rr, ra = src.count("reply") / len(src), src.count("react") / len(src)
+            rep += w * rr
+            rea += w * ra
+            info[k] = {"messages": n, "labels": len(got), "pooled": len(got) < 5, "act_rate": round(rr + ra, 3)}
+        return rep, rea, info
+
+    reply, react, tiers = estimate(by)
+    # uncertainty by bootstrap over the labels (resampling within each tier): tiers
+    # that borrow the pooled rate share one sample, which a per-tier formula would
+    # treat as independent and so understate (PR #22 review). Seeded: same input,
+    # same number.
+    rng = random.Random(0)
+    acts = []
+    for _ in range(300):
+        boot = {k: [rng.choice(v) for _ in v] for k, v in by.items()}
+        r1, r2, _ = estimate(boot)
+        acts.append(r1 + r2)
+    mean = sum(acts) / len(acts)
+    se = (sum((x - mean) ** 2 for x in acts) / (len(acts) - 1)) ** 0.5
+    # direct addresses always get a reply: @ / quote messages and pokes at 阿灯 alike
+    # (pokes aren't messages, so they add replies but not to the denominator)
+    direct = len([s for s in run.steps if is_direct(s.msg)])
+    n_people = len(people)
+    replies = reply * len(eligible) + direct
+    return {
+        "reply_share": _ratio(replies, n_people + replies),
+        "react_rate": _ratio(react * len(eligible), n_people),
+        "act_rate_unaddressed": round(reply + react, 3),
+        "act_rate_se": round(se, 3),
+        "labelled_raw_act_rate": _ratio(sum(1 for x in pooled if x != "quiet"), len(pooled)),
+        "tiers": tiers,
     }
 
 

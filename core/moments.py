@@ -17,7 +17,8 @@ def stored_moments(store, scope_id: str, since_ts: int = 0, until_ts: int | None
         msgs.append(Msg(
             msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
             text="" if r["recalled"] else r["text"],
-            mentions_bot="bot" in mentions, reply_to=r["reply_to"],
+            mentions_bot="bot" in mentions, mentions_other=any(x != "bot" for x in mentions),
+            reply_to=r["reply_to"],
             reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
             is_bot=bool(r["is_bot"]), from_bot=str(r["sender_uid"]) in bot_uids,
         ))

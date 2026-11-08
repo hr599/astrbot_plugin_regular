@@ -48,15 +48,20 @@ ANSWER_HINT = "回复 /reg label 加每条的答案，比如 /reg label 5 5 3 4 
 _QUESTION = ("?", "？", "吗", "呢", "啥", "什么", "怎么", "谁", "哪")
 
 
-def tier(row, aliases=DEFAULT_ALIASES) -> str:
-    """A: might be for the bot. B: a question or a quote. C: the rest."""
-    mentions = json.loads(row["mentions"]) if row["mentions"] else []
-    text = row["text"] or ""
+def tier_of(text: str, reply_to, has_mentions: bool, aliases=DEFAULT_ALIASES) -> str:
+    """A: might be for the bot. B: a question, a quote or an @. C: the rest. The bench
+    uses the same split to undo the sampling when estimating rates (bench/runner)."""
+    text = text or ""
     if name_addressed(text, aliases):
         return "A"
-    if row["reply_to"] or mentions or any(q in text for q in _QUESTION):
+    if reply_to or has_mentions or any(q in text for q in _QUESTION):
         return "B"
     return "C"
+
+
+def tier(row, aliases=DEFAULT_ALIASES) -> str:
+    mentions = json.loads(row["mentions"]) if row["mentions"] else []
+    return tier_of(row["text"], row["reply_to"], bool(mentions), aliases)
 
 
 def pick(rows, rng: random.Random, aliases=DEFAULT_ALIASES, k: int = 5) -> list:
