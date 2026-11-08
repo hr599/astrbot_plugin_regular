@@ -41,26 +41,22 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
            aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str = POLICY_VERSION) -> Run:
     steps, history = [], []
     scene = None
-    day, counts = None, {}  # 阿灯's replies to each other bot today (the whole day, not just CONTEXT)
+    state = limits.LimitState()  # limits see every moment, not just the last CONTEXT
     for m in rec.messages:
         if m.scene != scene:
             # a new independent scenario: the policy must not see the previous one
             # (PR #5 review). Live recordings have no scenes, so this never fires there.
-            history, scene, counts = [], m.scene, {}
-        if limits.day_of(m.ts) != day:
-            day, counts = limits.day_of(m.ts), {}
-        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases, bot_replies_today=dict(counts))
+            history, scene, state = [], m.scene, limits.LimitState()
+        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases, state=state)
         steps.append(Step(m, d, rec.labels.get(m.msg_id)))
-        if m.is_bot and history and history[-1].from_bot:
-            counts[history[-1].sender] = counts.get(history[-1].sender, 0) + 1
+        state.observe(m)
         history.append(m)
     run = Run(rec, policy_version, steps, params={"aliases": list(aliases)})
     run.metrics = score(run)
     return run
 
 
-def is_direct(m: Msg) -> bool:
-    return (m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot
+is_direct = limits.is_direct  # one definition, shared with the policy's limits
 
 
 def _ratio(a: int, b: int) -> float | None:

@@ -16,6 +16,12 @@ replying. Normal back-and-forth never gets near this; it's for someone holding
 down @. (The bench's direct-address gate still counts these as misses: a
 burst should be labelled, not silently excused.)
 
+State, not context (PR #14 review): these limits read a LimitState that sees
+every moment in order, not the last 30 messages the policy gets as
+conversation context, so a busy group can't push a burst or a bot exchange out
+of view. Replay keeps one per scene; the pipeline one per group, warmed from
+the store on first use.
+
 Live note: 阿灯's own messages aren't stored until sending lands (task L), so
 the bot-loop rule and the daily cap only bite in replay until then. The spam
 rule works live already: it only needs the person's own messages.
@@ -23,6 +29,7 @@ rule works live already: it only needs the person's own messages.
 
 from __future__ import annotations
 
+from collections import deque
 from typing import Iterable
 
 BOT_DAILY_CAP = 3
@@ -69,3 +76,48 @@ def direct_burst(m, context: list, now: int, is_direct) -> int:
     """How many times this person addressed 阿灯 directly in the last SPAM_WINDOW_S."""
     return sum(1 for c in context
                if c.sender == m.sender and is_direct(c) and now - c.ts <= SPAM_WINDOW_S)
+
+
+def is_direct(m) -> bool:
+    """@ / quote of 阿灯 / poke, from a person (other bots are outside the gate)."""
+    return bool(m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot
+
+
+class LimitState:
+    """Everything the limits need, fed one moment at a time, in order."""
+
+    def __init__(self) -> None:
+        self.directs: dict[str, deque] = {}  # sender -> recent direct-address times
+        self.answered_bot = False  # 阿灯 answered a bot since a person last spoke
+        self.day: int | None = None
+        self.counts: dict[str, int] = {}  # 阿灯's replies per other bot, on self.day
+        self.prev = None
+
+    def observe(self, m) -> None:
+        d = day_of(m.ts)
+        if d != self.day:
+            self.day, self.counts = d, {}
+        if is_human(m):
+            self.answered_bot = False
+        if m.is_bot and self.prev is not None and self.prev.from_bot:
+            self.answered_bot = True
+            self.counts[self.prev.sender] = self.counts.get(self.prev.sender, 0) + 1
+        if is_direct(m):
+            q = self.directs.setdefault(m.sender, deque())
+            q.append(m.ts)
+            while q and m.ts - q[0] > SPAM_WINDOW_S:
+                q.popleft()
+        self.prev = m
+
+    def burst(self, sender: str, now: int) -> int:
+        return sum(1 for t in self.directs.get(sender, ()) if now - t <= SPAM_WINDOW_S)
+
+    def bot_counts(self, now: int) -> dict[str, int]:
+        return dict(self.counts) if day_of(now) == self.day else {}
+
+    @classmethod
+    def from_moments(cls, moments: Iterable) -> "LimitState":
+        st = cls()
+        for m in moments:
+            st.observe(m)
+        return st

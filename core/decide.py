@@ -102,6 +102,7 @@ def decide(
     aliases: tuple[str, ...] = DEFAULT_ALIASES,
     threshold: float = 0.9,
     bot_replies_today: dict[str, int] | None = None,
+    state: "limits.LimitState | None" = None,
 ) -> Decision:
     """`context` = recent messages before `m`, oldest first (unused by the
     baseline; M2 policies read it). `now` = the clock the caller supplies."""
@@ -112,20 +113,22 @@ def decide(
     rule = "direct" if action == "reply" else ("likely_not_forced" if kind == "name" else "not_addressed")
     reasons: dict[str, Any] = {"rule": rule, "signals": why, "context_len": len(context), "now": now}
     if action == "reply":
-        # task G: limits that hold a due reply back (core/limits.py)
+        # task G: limits that hold a due reply back (core/limits.py). They read a
+        # LimitState fed every moment in order; without one (a policy called on its
+        # own), the context stands in for it.
+        st = state if state is not None else limits.LimitState.from_moments(context)
         if m.from_bot:
-            counts = bot_replies_today if bot_replies_today is not None else limits.bot_replies_today(context, now)
-            if limits.answered_bot_since_human(context):
+            counts = bot_replies_today if bot_replies_today is not None else st.bot_counts(now)
+            if st.answered_bot:
                 action, reasons["rule"] = "quiet", "bot_loop"
             elif counts.get(m.sender, 0) >= limits.BOT_DAILY_CAP:
                 action, reasons["rule"] = "quiet", "bot_daily_cap"
         elif kind == "explicit":
-            burst = limits.direct_burst(m, context, now, is_direct)
+            burst = st.burst(m.sender, now)
             if burst >= limits.SPAM_MAX:
                 action, reasons["rule"] = "react", "rate_limited"
                 reasons["burst"] = burst
     return Decision(action, score, kind, reasons)
 
 
-def is_direct(m: Msg) -> bool:
-    return bool(m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot
+is_direct = limits.is_direct

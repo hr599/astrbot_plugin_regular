@@ -9,7 +9,7 @@ from core import limits
 from core.decide import Msg, decide
 from core.gate import GateConfig
 from core.pipeline import Pipeline
-from tests.test_m0 import BOT, FRIEND, GROUP, ME, ev, group_msg
+from tests.test_m0 import BOT, FRIEND, GROUP, ME, SCOPE, ev, group_msg
 
 T = 1_793_451_600  # a Saturday 21:00 UTC+8
 OTHER_BOT = "3612669335"
@@ -86,6 +86,27 @@ class BurstTests(unittest.TestCase):
                 self.assertFalse([s for s in run.steps if s.decision.reasons.get("rule") == "rate_limited"])
 
 
+class BeyondContextTests(unittest.TestCase):
+    """PR #14 review: the limits must not depend on the 30-moment context."""
+
+    def test_burst_survives_30_other_messages(self):
+        msgs = [human(i, at=True, dt=i) for i in range(limits.SPAM_MAX)]
+        msgs += [human(100 + i, who=f"p{i}", dt=4) for i in range(30)]
+        msgs.append(human(9, at=True, dt=34))
+        last = replay(Recording("burst", "fixture", msgs)).steps[-1].decision
+        self.assertEqual((last.action, last.reasons["rule"], last.reasons["burst"]),
+                         ("react", "rate_limited", limits.SPAM_MAX))
+
+    def test_bot_loop_survives_30_bot_messages(self):
+        msgs = [bot(0), adeng(0, dt=5)] + [bot(100 + i, who="签到姬", at=False, dt=10 + i) for i in range(30)]
+        msgs.append(bot(1, dt=60))
+        last = replay(Recording("loop", "fixture", msgs)).steps[-1].decision
+        self.assertEqual((last.action, last.reasons["rule"]), ("quiet", "bot_loop"))
+        # a person in between still lifts it
+        msgs.insert(-1, human(1, dt=55))
+        self.assertEqual(replay(Recording("loop", "fixture", msgs)).steps[-1].decision.action, "reply")
+
+
 class LiveTests(unittest.TestCase):
     """The pipeline's shadow decide now sees stored history."""
 
@@ -104,6 +125,36 @@ class LiveTests(unittest.TestCase):
         self.assertEqual([o.reasons["shadow"]["would"] for o in outs], ["reply"] * limits.SPAM_MAX + ["react"])
         self.assertEqual(outs[-1].reasons["shadow"]["rule"], "rate_limited")
         self.assertEqual(self.at(ME, 99, 60).reasons["shadow"]["would"], "reply")  # someone else
+
+    def poke(self, uid, dt):
+        return self.p.handle(ev({"post_type": "notice", "notice_type": "notify", "sub_type": "poke",
+                                 "group_id": int(GROUP), "user_id": int(uid), "target_id": int(BOT),
+                                 "self_id": int(BOT), "time": self.t + dt}))
+
+    def test_poke_joins_the_same_persons_burst_live_and_in_replay(self):
+        for i in range(limits.SPAM_MAX):
+            self.at(FRIEND, i, i * 10)
+        out = self.poke(FRIEND, 40)
+        self.assertEqual((out.reasons["shadow"]["would"], out.reasons["shadow"]["rule"]), ("react", "rate_limited"))
+        self.assertEqual(out.reasons["actor"], self.s.person("aiocqhttp", FRIEND, None, self.t))
+        # the stored poke replays as the same person
+        from bench.situations import from_store
+        steps = replay(from_store(self.s, SCOPE)).steps
+        poke = [st for st in steps if st.msg.kind == "poke"][0]
+        self.assertEqual(poke.decision.reasons["rule"], "rate_limited")
+        # someone else's poke is their own
+        self.assertEqual(self.poke(ME, 45).reasons["shadow"]["would"], "reply")
+
+    def test_limits_survive_a_restart(self):
+        for i in range(limits.SPAM_MAX):
+            self.at(FRIEND, i, i * 10)
+        self.p = Pipeline(self.s, GateConfig(group_ids={GROUP}, bot_uids={OTHER_BOT}))  # fresh process
+        self.assertEqual(self.at(FRIEND, 50, 45).reasons["shadow"]["rule"], "rate_limited")
+
+    def test_redelivery_isnt_a_second_at(self):
+        for _ in range(limits.SPAM_MAX + 2):
+            out = self.at(FRIEND, 1, 0)  # the same message id, delivered again
+        self.assertEqual(out.reasons["shadow"]["would"], "reply")
 
     def test_live_other_bot_is_tagged_and_answerable(self):
         out = self.at(OTHER_BOT, 1, 0)

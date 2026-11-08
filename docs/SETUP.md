@@ -201,7 +201,11 @@ chat with them, within limits (`core/limits.py`):
 
 People: a direct @ / quote / poke always gets a reply, except in a burst. If the
 same person has already @'d 阿灯 4 times in the last 2 minutes, it reacts
-instead. Normal chat never gets near that.
+instead (pokes count too). Normal chat never gets near that.
+
+The limits keep their own state per group, so a busy chat can't push an earlier
+@ or a bot exchange out of view, and a restart rebuilds it from today's stored
+messages.
 
 While 阿灯 only observes, these show up as the shadow decision's `rule` in
 traces (`bot_loop`, `bot_daily_cap`, `rate_limited`) and on the bench. The bot
