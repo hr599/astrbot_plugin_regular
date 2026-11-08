@@ -151,6 +151,25 @@ class LiveTests(unittest.TestCase):
         self.p = Pipeline(self.s, GateConfig(group_ids={GROUP}, bot_uids={OTHER_BOT}))  # fresh process
         self.assertEqual(self.at(FRIEND, 50, 45).reasons["shadow"]["rule"], "rate_limited")
 
+    def test_restart_just_after_midnight_keeps_the_burst(self):
+        # issue #17: four @s at 23:59:20-50 UTC+8, restart, an @ at 00:00:01
+        midnight = (limits.day_of(int(time.time())) * 86400) - 8 * 3600
+        self.t = midnight - 40
+        for i in range(limits.SPAM_MAX):
+            self.at(FRIEND, i, i * 10)
+        self.p = Pipeline(self.s, GateConfig(group_ids={GROUP}, bot_uids={OTHER_BOT}))
+        self.assertEqual(self.at(FRIEND, 50, 41).reasons["shadow"]["rule"], "rate_limited")
+
+    def test_other_bots_pokes_stay_bots_in_replay(self):
+        # issue #17: live and replay agree that a configured bot's pokes are a bot's
+        outs = [self.poke(OTHER_BOT, i * 5) for i in range(limits.SPAM_MAX + 1)]
+        self.assertEqual({o.reasons["shadow"]["rule"] for o in outs}, {"direct"})
+        from bench.situations import from_store
+        steps = [st for st in replay(from_store(self.s, SCOPE, bot_uids={OTHER_BOT})).steps
+                 if st.msg.kind == "poke"]
+        self.assertTrue(all(st.msg.from_bot for st in steps))
+        self.assertNotIn("rate_limited", {st.decision.reasons["rule"] for st in steps})
+
     def test_redelivery_isnt_a_second_at(self):
         for _ in range(limits.SPAM_MAX + 2):
             out = self.at(FRIEND, 1, 0)  # the same message id, delivered again

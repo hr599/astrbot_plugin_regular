@@ -21,12 +21,12 @@ def stored_moments(store, scope_id: str, since_ts: int = 0, until_ts: int | None
             reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
             is_bot=bool(r["is_bot"]), from_bot=str(r["sender_uid"]) in bot_uids,
         ))
-    msgs += _pokes(store, scope_id, since_ts, until_ts)
+    msgs += _pokes(store, scope_id, since_ts, until_ts, bot_uids)
     msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))
     return msgs
 
 
-def _pokes(store, scope_id, since_ts, until_ts) -> list[Msg]:
+def _pokes(store, scope_id, since_ts, until_ts, bot_uids=frozenset()) -> list[Msg]:
     sql = "SELECT trace_id, ts, reasons FROM traces WHERE scope_id=? AND ts>=? AND ended_at='gate'"
     args: list = [scope_id, since_ts]
     if until_ts is not None:
@@ -37,7 +37,8 @@ def _pokes(store, scope_id, since_ts, until_ts) -> list[Msg]:
         reasons = json.loads(r["reasons"])
         if reasons.get("notice") == "poke":
             actor = reasons.get("actor")  # person id; absent for old traces and opted-out pokers
+            from_bot = actor is not None and store.uid_of(actor) in bot_uids  # issue #17
             out.append(Msg(msg_id=f"poke:{r['trace_id']}", ts=r["ts"],
                            sender=str(actor) if actor is not None else "?", text="[戳一戳]",
-                           kind="poke", poke_bot=bool(reasons.get("poked_bot"))))
+                           kind="poke", poke_bot=bool(reasons.get("poked_bot")), from_bot=from_bot))
     return out
