@@ -124,11 +124,53 @@ class SendTests(unittest.TestCase):
         self.reg(f"/reg say {GROUP} 第一句！第二句！第三句")
         res = self.run_queue(on_sleep=lambda: setattr(self.outbox, "mode", "off") if self.sent else None)
         self.assertEqual(res, [["sent", "stopped: sending was switched off"]])
-        self.outbox.mode = "on"
+        self.outbox.set_mode("on")
         self.sent.clear()
         self.reg(f"/reg say {GROUP} 第一句！第二句")
         res = self.run_queue(on_sleep=lambda: self.cfg.paused_groups.add(GROUP) if self.sent else None)
         self.assertEqual(res, [["sent", "stopped: group paused"]])
+
+    # ---------------------------------------------------------------- PR #16 review
+    def test_dry_job_never_becomes_a_real_send(self):
+        self.reg("/reg send dry")
+        self.assertIn("试运行", self.reg(f"/reg say {GROUP} 测试文字"))
+        job = self.outbox.queue[0]
+        self.outbox.queue.clear()  # already started, like main._start_queued does
+        self.reg("/reg send on")  # switched before its delay ran out
+        self.outbox.queue.append(job)
+        self.assertEqual(self.run_queue(), [["stopped: sending mode changed since it was queued"]])
+        self.assertEqual(self.sent, [])
+
+    def test_off_then_on_doesnt_revive_a_started_job(self):
+        self.reg("/reg send on")
+        self.reg(f"/reg say {GROUP} 旧的那句")
+        job = self.outbox.queue.popleft()  # in flight
+        self.reg("/reg send off")
+        self.reg("/reg send on")
+        self.outbox.queue.append(job)
+        self.assertEqual(self.run_queue(), [["stopped: sending mode changed since it was queued"]])
+        self.reg(f"/reg say {GROUP} 新的这句")  # a new say after re-enabling still goes out
+        self.assertEqual(self.run_queue(), [["sent"]])
+        self.assertEqual(self.sent, [(GROUP, "新的这句")])
+
+    def test_cap_counts_jobs_already_queued(self):
+        # issue #18: two jobs prepared at once can't both slip under the cap
+        scope = f"aiocqhttp:GroupMessage:{GROUP}"
+        self.reg("/reg send on")
+        self.outbox.seed(scope, [int(time.time()) - 60] * (SEND_CAP_PER_HOUR - 1))
+        self.assertIn("排好了", self.reg(f"/reg say {GROUP} 第一个"))
+        self.assertIn("group cap", self.reg(f"/reg say {GROUP} 第二个"))
+        self.run_queue()
+        self.assertEqual(len(self.sent), 1)
+        self.assertEqual(self.outbox._reserved.get(scope, 0), 0)
+
+    def test_stopped_job_frees_its_reservation(self):
+        scope = f"aiocqhttp:GroupMessage:{GROUP}"
+        self.reg("/reg send on")
+        self.reg(f"/reg say {GROUP} 一！二！三")
+        self.assertEqual(self.outbox._reserved[scope], 3)
+        self.run_queue(fail=True)
+        self.assertEqual(self.outbox._reserved[scope], 0)
 
     def test_send_failure_stops_and_records_nothing(self):
         self.reg("/reg send on")

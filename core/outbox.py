@@ -43,6 +43,9 @@ class Job:
     origin: str  # "admin_say" | "reply" (M2)
     created: int = field(default_factory=lambda: int(time.time()))
     reply_to: str | None = None  # msg_id this answers, if any
+    mode: str = "off"  # the mode it was created under: a dry job never becomes a real send
+    gen: int = 0  # outbox generation at creation; any mode change retires older jobs
+    reserved: int = 0  # parts still held against the group cap
 
 
 @dataclass
@@ -61,6 +64,23 @@ class Outbox:
         self.canaries = list(canaries)
         self.queue: deque[Job] = deque()
         self._sent: dict[str, deque] = {}  # scope -> part timestamps (sent or dry), rolling hour
+        self._reserved: dict[str, int] = {}  # scope -> parts queued or in flight, not yet sent
+        self.gen = 0
+
+    def set_mode(self, mode: str) -> None:
+        """Any change retires every job made before it (PR #16 review): a dry job can't
+        turn into a real send when you switch to on, and off -> on doesn't revive
+        a job that was already on its way."""
+        if mode != self.mode:
+            self.gen += 1
+        self.mode = mode
+        for job in list(self.queue):
+            self.release(job)
+        self.queue.clear()
+
+    def release(self, job: "Job") -> None:
+        self._reserved[job.scope_id] = max(0, self._reserved.get(job.scope_id, 0) - job.reserved)
+        job.reserved = 0
 
     # ---------------------------------------------------------------- caps
     def sent_last_hour(self, scope_id: str, now: int) -> int:
@@ -82,7 +102,7 @@ class Outbox:
         now = int(time.time()) if now is None else now
         if self.mode == "off":
             return Prepared(None, refused="sending is off (/reg send dry|on)")
-        if self.sent_last_hour(scope_id, now) >= SEND_CAP_PER_HOUR:
+        if self.sent_last_hour(scope_id, now) + self._reserved.get(scope_id, 0) >= SEND_CAP_PER_HOUR:
             return Prepared(None, refused=f"group cap: {SEND_CAP_PER_HOUR} messages in the last hour")
         admin = origin == "admin_say"
         # the admin's own words: checked against themselves for specifics, so only
@@ -99,7 +119,13 @@ class Outbox:
             if not parts or any(command_like(p) for p in parts):
                 return Prepared(None, d.hits, refused="blocked: a part would read as a command")
             d.parts, d.delays = parts, delays(parts)
-        job = Job(scope_id, group_id, d.parts, d.delays, origin, created=now, reply_to=reply_to)
+        # the cap counts parts already promised to other jobs, so two jobs prepared at
+        # once can't both squeeze under it (issue #18); a job that won't fit is trimmed
+        room = SEND_CAP_PER_HOUR - self.sent_last_hour(scope_id, now) - self._reserved.get(scope_id, 0)
+        parts, waits = d.parts[:room], d.delays[:room]
+        job = Job(scope_id, group_id, parts, waits, origin, created=now, reply_to=reply_to,
+                  mode=self.mode, gen=self.gen, reserved=len(parts))
+        self._reserved[scope_id] = self._reserved.get(scope_id, 0) + len(parts)
         self.queue.append(job)
         return Prepared(job, d.hits)
 
@@ -107,9 +133,13 @@ class Outbox:
         """Re-checked before every part: the switch, a pause, the cap, and the part itself."""
         if self.mode == "off":
             return "sending was switched off"
+        if job.gen != self.gen:
+            return "sending mode changed since it was queued"
         if job.group_id in paused:
             return "group paused"
-        if self.sent_last_hour(job.scope_id, now) >= SEND_CAP_PER_HOUR:
+        # this job's own reserved parts are already inside the cap
+        if self.sent_last_hour(job.scope_id, now) + self._reserved.get(job.scope_id, 0) - job.reserved \
+                >= SEND_CAP_PER_HOUR:
             return "group cap reached"
         if command_like(part):
             return "command-like part"
@@ -122,26 +152,30 @@ async def deliver(job: Job, outbox: Outbox, *, send, record, paused, clock, slee
     paused() -> set of paused group ids; clock() -> now; sleep(seconds) awaits.
     Returns what happened to each part ("sent", "dry", or "stopped: <why>")."""
     out: list[str] = []
-    for part, wait in zip(job.parts, job.delays):
-        await sleep(wait)
-        now = int(clock())
-        why = outbox.can_send_part(job, part, paused(), now)
-        if why:
-            out.append(f"stopped: {why}")
-            break
-        if outbox.mode == "dry":
-            record(job, part, None, now, True)
+    try:
+        for part, wait in zip(job.parts, job.delays):
+            await sleep(wait)
+            now = int(clock())
+            why = outbox.can_send_part(job, part, paused(), now)
+            if why:
+                out.append(f"stopped: {why}")
+                break
+            job.reserved -= 1  # this part leaves the reservation and becomes sent (or dry)
+            outbox._reserved[job.scope_id] = max(0, outbox._reserved.get(job.scope_id, 0) - 1)
             outbox.note_sent(job.scope_id, now)
-            out.append("dry")
-            continue
-        try:
-            mid = await send(job.group_id, part)
-        except Exception as e:  # noqa: BLE001 - report it, don't retry blindly
-            out.append(f"stopped: send failed ({type(e).__name__})")
-            break
-        outbox.note_sent(job.scope_id, now)
-        record(job, part, mid, now, False)
-        out.append("sent")
+            if job.mode == "dry":  # the job's own mode, never the current one
+                record(job, part, None, now, True)
+                out.append("dry")
+                continue
+            try:
+                mid = await send(job.group_id, part)
+            except Exception as e:  # noqa: BLE001 - report it, don't retry blindly
+                out.append(f"stopped: send failed ({type(e).__name__})")
+                break
+            record(job, part, mid, now, False)
+            out.append("sent")
+    finally:
+        outbox.release(job)  # whatever didn't go out frees its place under the cap
     return out
 
 
@@ -162,9 +196,7 @@ class SendAdmin:
         if sub == "send":
             if not args or args[0].lower() not in MODES:
                 return f"发送模式：{self.outbox.mode}。用法：/reg send off|dry|on（dry = 只记录不真发）"
-            self.outbox.mode = args[0].lower()
-            if self.outbox.mode == "off":
-                self.outbox.queue.clear()
+            self.outbox.set_mode(args[0].lower())
             self.save_mode(self.outbox.mode)
             return {"off": "已关闭发送。", "dry": "试运行：会照常排队、检查、计时，但只记录不发出。",
                     "on": "已开启发送。阿灯现在会真的在群里说话（目前只有 /reg say 会触发）。"}[self.outbox.mode]
