@@ -195,8 +195,12 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
     fn = sum(1 for s in lab if s.label["addressed"] and s.decision.addressed < ADDRESSED_THRESHOLD)
     confusion: dict[str, dict[str, int]] = {a: {b: 0 for b in ("quiet", "react", "reply")}
                                            for a in ("quiet", "react", "reply")}
+    decided_by: dict[str, dict[str, int]] = {}  # your label -> which rule decided it (names only)
     for s in lab:
         confusion[s.label["should"]][s.decision.action] += 1
+        r = decided_by.setdefault(s.label["should"], {})
+        k = str(s.decision.reasons.get("rule") or "none")
+        r[k] = r.get(k, 0) + 1
     agree = sum(confusion[a][a] for a in confusion)
     # mean of per-class recall over the classes you used: "quiet" is most labels, so
     # plain agreement rewards a bot that never speaks; this doesn't (M2a tuning objective)
@@ -214,6 +218,7 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
         "speak_recall": _ratio(spoke_both, spoke_label),
         "speak_precision": _ratio(spoke_both, spoke_pred),
         "confusion": confusion,
+        "decided_by": decided_by,
     }
 
 

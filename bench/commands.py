@@ -108,7 +108,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
-            "action_agreement", "balanced_accuracy", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
+            "action_agreement", "balanced_accuracy", "decided_by", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
     return {
         "file": runs[-1].name,

@@ -119,3 +119,32 @@ class FixtureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LiveLabelGateTests(unittest.TestCase):
+    """Nov 9 live tune: every real label came out quiet. Two room rules were too wide."""
+
+    def test_friendly_back_and_forth_is_not_an_argument(self):
+        texts = ["今晚吃啥", "烤冷面吧", "又是烤冷面", "那你说吃啥", "火锅？", "太贵了", "那就烤冷面", "行吧哈哈"]
+        h = [msg(i, t, who="A" if i % 2 == 0 else "B", dt=i * 20) for i, t in enumerate(texts)]
+        d = act(msg(99, "有人会blender吗", who="C", dt=len(h) * 20), h)
+        self.assertNotEqual(d.reasons["rule"], "argument")
+
+    def test_a_real_argument_still_is(self):
+        texts = ["明明是你说的", "凭什么怪我", "你每次都这样", "关你什么事", "懒得跟你说", "随便你"]
+        h = [msg(i, t, who="A" if i % 2 == 0 else "B", dt=i * 15) for i, t in enumerate(texts)]
+        self.assertEqual(act(msg(99, "有人会blender吗", who="C", dt=100), h).reasons["rule"], "argument")
+
+    def test_serious_mode_ends_within_an_hour_of_busy_chat(self):
+        h = [msg(0, "今天考试崩溃了", who="A")] + [msg(i + 1, "嗯嗯", who="BCD"[i % 3], dt=300 * (i + 1))
+                                              for i in range(12)]
+        st = limits.LimitState.from_moments(h)
+        self.assertTrue(st.serious_until > EVENING + 1800)       # still on while it's fresh
+        self.assertLessEqual(st.serious_until, EVENING + limits.SERIOUS_MAX_S)
+        d = act(msg(99, "有人会blender吗", who="C", dt=3700), h)
+        self.assertNotEqual(d.reasons["rule"], "serious")
+
+    def test_bench_reports_which_rule_decided_each_label(self):
+        r = next(x for x in load_fixtures() if x.name == "synthetic_review_v1")
+        m = replay(r, decide_m2, aliases=ALIASES, params=P).metrics
+        self.assertEqual(sum(sum(v.values()) for v in m["decided_by"].values()), m["labeled_dev"])

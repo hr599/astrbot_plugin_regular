@@ -38,6 +38,7 @@ SPAM_MAX = 4
 UTC8 = 8 * 3600
 ROOM_WINDOW = 30  # messages the share-of-recent-messages cap looks at
 SERIOUS_QUIET_S = 1800  # serious mode lasts until the thread is quiet for 30 minutes
+SERIOUS_MAX_S = 3600  # ...but at most an hour past the last serious message
 WARM_MAX_S = 7 * 86400  # restart warm-up reaches back at most this far
 
 
@@ -116,6 +117,7 @@ class LimitState:
         self.humans: deque = deque(maxlen=3)  # (ts, sender) of the last human messages
         self.heat, self.heat_ts = 0.0, None
         self.serious_until = 0
+        self.serious_cue_ts = 0
 
     def observe(self, m) -> None:
         d = day_of(m.ts)
@@ -155,9 +157,13 @@ class LimitState:
                               insult=bool(RUDE.search(text)), heat_cue=bool(HEAT_CUE.search(text)))
         self.heat_ts = m.ts
         if serious_cue(text):
+            self.serious_cue_ts = m.ts
             self.serious_until = m.ts + SERIOUS_QUIET_S
         elif self.serious_until > m.ts:
-            self.serious_until = m.ts + SERIOUS_QUIET_S  # lasts until the thread is quiet for 30 min
+            # lasts until the thread is quiet for 30 min, but never more than an hour
+            # past the last serious message: in a busy group the chat moves on (live
+            # labels, Nov 9: one 崩溃 kept 阿灯 quiet for the rest of the day)
+            self.serious_until = min(m.ts + SERIOUS_QUIET_S, self.serious_cue_ts + SERIOUS_MAX_S)
         h.append((m.ts, m.sender))
 
     # ---- room readings (M2 decide) ----
