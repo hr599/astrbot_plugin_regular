@@ -123,6 +123,28 @@ class SpecificsTests(unittest.TestCase):
         # everyday words that look like numbers aren't specifics
         self.assertEqual(made_up_specifics("好一点了 差一点 我们一块去吧 有两点建议", ""), [])
 
+    def test_specifics_round_two(self):
+        # PR #9 review, second round
+        v = lambda a, b="": check(a, context=b, rules={}).verdict  # noqa: E731
+        # Chinese numerals at the end of the text; 一元 is a price (only 一块 can mean "together")
+        self.assertEqual(v("集合时间是三点"), "rewrite")
+        self.assertEqual(v("门票一元"), "rewrite")
+        self.assertEqual(v("我们一块去看看"), "send")
+        # currency and exact amounts are kept
+        self.assertEqual(v("门票50美元", "门票50元"), "rewrite")
+        self.assertEqual(v("￥50", "$50"), "rewrite")
+        self.assertEqual(v("价格10000.01元", "价格10000.02元"), "rewrite")
+        self.assertEqual(v("门票五十元", "门票50块"), "send")
+        self.assertEqual(v("五毛", "0.5元"), "send")
+        # 上午/下午 kept; a side that doesn't say matches either; 15:00 is 下午3点
+        self.assertEqual(v("下午三点见", "上午三点见"), "rewrite")
+        self.assertEqual(v("下午三点见", "15:00见"), "send")
+        self.assertEqual(v("三点见", "下午3点见"), "send")
+        # a full date backs its parts, not the reverse
+        self.assertEqual(v("15号见", "11月15号见"), "send")
+        self.assertEqual(v("11月见", "11月15号见"), "send")
+        self.assertEqual(v("11月15号见", "15号见"), "rewrite")
+
     def test_runs_of_punctuation_stay_attached(self):
         # PR #9 review: a lone "！" part was dropped by the command check
         for t in ("太好了！！", "什么？！", "真的吗？？"):
