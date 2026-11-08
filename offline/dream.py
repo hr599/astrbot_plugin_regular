@@ -242,6 +242,13 @@ def _existing_support(ctx: Ctx, claim_id: int) -> list[Evidence]:
 def check_corroboration(op: Op, ctx: Ctx):
     if op.kind == "add":
         return corroboration(op.type, op.subject, op.object, op.evidence, ctx)
+    if op.kind == "revise":
+        # replacement text is a new assertion: its own evidence must meet the type's
+        # rule (PR #11 review: Bob alone could rewrite Alice's boundary). A revise
+        # can't park as a candidate, so falling short rejects it.
+        v = corroboration(op.type, op.subject, op.object, op.evidence, ctx)
+        if v is not None:
+            return Verdict(v.check, "revise: " + v.reason)
     return None
 
 
@@ -282,22 +289,28 @@ def check_duplicate(op: Op, ctx: Ctx):
     return None
 
 
+def cap_reason(ctx: Ctx, type_: str, subject, batch: list[Op] = ()) -> str | None:
+    """Would one more validated claim of this type/subject break a cap?"""
+    q = lambda sql, *a: ctx.store.db.execute(sql, a).fetchone()[0]  # noqa: E731
+    if type_ == "joke" and q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND type='joke' AND status='validated'",
+                             ctx.scope_id) + sum(o.type == "joke" for o in batch) >= CAPS["joke"]:
+        return "10 active jokes: merge or retire one first"
+    if subject is None:
+        if q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id IS NULL AND status='validated'",
+             ctx.scope_id) + sum(o.subject is None for o in batch) >= CAPS["group"]:
+            return "20 group-level claims: merge or retire first"
+    elif q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id=? AND status='validated'",
+           ctx.scope_id, subject) + sum(o.subject == subject for o in batch) >= CAPS["person"]:
+        return "12 claims for this person: merge or retire first"
+    return None
+
+
 def check_caps(op: Op, ctx: Ctx):
     if op.kind != "add":
         return None
-    q = lambda sql, *a: ctx.store.db.execute(sql, a).fetchone()[0]  # noqa: E731
     batch = [o for o, st in ctx.pending if st == "validated"]  # validated earlier in this batch
-    if op.type == "joke" and q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND type='joke' AND status='validated'",
-                               ctx.scope_id) + sum(o.type == "joke" for o in batch) >= CAPS["joke"]:
-        return Verdict("caps", "10 active jokes: merge or retire one first")
-    if op.subject is None:
-        if q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id IS NULL AND status='validated'",
-             ctx.scope_id) + sum(o.subject is None for o in batch) >= CAPS["group"]:
-            return Verdict("caps", "20 group-level claims: merge or retire first")
-    elif q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id=? AND status='validated'",
-           ctx.scope_id, op.subject) + sum(o.subject == op.subject for o in batch) >= CAPS["person"]:
-        return Verdict("caps", "12 claims for this person: merge or retire first")
-    return None
+    reason = cap_reason(ctx, op.type, op.subject, batch)
+    return Verdict("caps", reason) if reason else None
 
 
 CHECKS = [check_target, check_shape, check_evidence, check_verbatim, check_imperative, check_sensitive,
@@ -313,9 +326,22 @@ def _snapshot(store, claim_id: int) -> dict | None:
     return {"claim": dict(row), "evidence": ev}
 
 
-def _add_ev(db, claim_id: int, e: Evidence, stance: str) -> None:
-    db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,?)",
-               (claim_id, e.msg_id, e.quote, stance))
+def _has_author_col(db) -> bool:
+    return any(r[1] == "author_id" for r in db.execute("PRAGMA table_info(evidence)"))
+
+
+def _add_ev(db, claim_id: int, e: Evidence, stance: str, author: int | None = None) -> None:
+    """Evidence row. With schema v3 (#12) it also records who said the quote, from the
+    message, or from a snapshot when restoring after the message has aged out."""
+    if _has_author_col(db):
+        if author is None:
+            row = db.execute("SELECT person_id FROM messages WHERE msg_id=?", (e.msg_id,)).fetchone()
+            author = row[0] if row else None
+        db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance, author_id) VALUES (?,?,?,?,?)",
+                   (claim_id, e.msg_id, e.quote, stance, author))
+    else:
+        db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,?)",
+                   (claim_id, e.msg_id, e.quote, stance))
 
 
 def _source(op: Op, ctx: Ctx) -> str:
@@ -346,8 +372,9 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
         run_id = db.execute(
             "INSERT INTO dream_runs (scope_id, started, model, diff_json) VALUES (?,?,?,'[]')",
             (ctx.scope_id, ctx.now, model)).lastrowid
-        diff = []
+        diff, late = [], []
         for op in outcome.accepted:
+            note = None
             touched = [op.claim_id] + op.merge_ids if op.claim_id else []
             before = {cid: _snapshot(ctx.store, cid) for cid in touched}
             if op.kind == "add":
@@ -356,13 +383,21 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
             elif op.kind == "reinforce":
                 have = {e.msg_id for e in _existing_support(ctx, op.claim_id)}
                 fresh = [e for e in op.evidence if e.msg_id not in have]
+                if not fresh:
+                    # an earlier op in this batch already cited it (PR #11 review): reject
+                    # this one, keep the rest of the run
+                    late.append((op, Verdict("duplicate", "evidence already cited earlier in this batch")))
+                    continue
                 cur = ctx.claim(op.claim_id)
-                # a candidate is promoted only if old + new evidence now meets its rule
-                status = cur["status"]
+                # a candidate is promoted only if old + new evidence now meets its rule,
+                # and only within the caps (PR #11 review)
+                status, note = cur["status"], None
                 if status in ("candidate", "dormant"):
                     ok = corroboration(cur["type"], cur["subject_id"], cur["object_id"],
                                        _existing_support(ctx, op.claim_id) + fresh, ctx) is None
-                    status = "validated" if ok else status
+                    cap = cap_reason(ctx, cur["type"], cur["subject_id"]) if ok else None
+                    status = "validated" if ok and not cap else status
+                    note = cap
                 db.execute("""UPDATE claims SET strength=MIN(1.0, strength+0.25), status=?,
                               expires=CASE WHEN ?='validated' THEN NULL ELSE expires END,
                               last_evidence=?, run_id=? WHERE claim_id=?""",
@@ -385,8 +420,14 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
                     db.execute("UPDATE evidence SET claim_id=? WHERE claim_id=?", (op.claim_id, mid))
                     db.execute("UPDATE claims SET status='retired', run_id=? WHERE claim_id=?", (run_id, mid))
                 db.execute("UPDATE claims SET run_id=? WHERE claim_id=?", (run_id, op.claim_id))
-            diff.append({"op": op.to_json(), "before": before,
-                         "touched": touched, "after": {cid: _snapshot(ctx.store, cid) for cid in touched}})
+            entry = {"op": op.to_json(), "before": before,
+                     "touched": touched, "after": {cid: _snapshot(ctx.store, cid) for cid in touched}}
+            if note:
+                entry["kept_candidate"] = note
+            diff.append(entry)
+        for op, v in late:
+            outcome.accepted.remove(op)
+            outcome.rejected.append((op, v))
         for op, v in outcome.demoted:
             cid = _insert_claim(ctx, op, "candidate", run_id, ctx.now + CANDIDATE_DAYS * 86400)
             diff.append({"op": op.to_json(), "before": {}, "touched": [cid], "candidate": v.reason,
@@ -433,7 +474,7 @@ def revert(store, run_id: int) -> int:
                 store.db.execute(f"UPDATE claims SET {cols} WHERE claim_id=?",
                                  [c[k] for k in c if k != "claim_id"] + [cid])
                 for e in snap["evidence"]:
-                    _add_ev(store.db, cid, Evidence(e["msg_id"], e["quote"]), e["stance"])
+                    _add_ev(store.db, cid, Evidence(e["msg_id"], e["quote"]), e["stance"], e.get("author_id"))
             # merge moved the sources' evidence onto the target; restoring the target's
             # snapshot above put its own back, and the sources' snapshots restore theirs
         store.db.execute("UPDATE dream_runs SET reverted=1 WHERE run_id=?", (run_id,))

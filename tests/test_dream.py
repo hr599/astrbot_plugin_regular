@@ -244,6 +244,68 @@ class DreamTest(unittest.TestCase):
                      self.add("self_disclosure", "在学法语。", [self.ev(m)], subject="bob")], self.ctx())
         self.assertEqual((res["applied"], [r[2].split(":")[0] for r in res["rejected"]]), (1, ["duplicate"]))
 
+    # ---------------------------------------------------------------- PR #11 review, round 2
+    def test_same_new_evidence_twice_in_a_batch_rejects_one_keeps_the_run(self):
+        m = self.say("alice", "我在学日语")
+        apply([self.add("self_disclosure", "在学日语", [self.ev(m)])], self.ctx())
+        cid = self.claims()[0]["claim_id"]
+        n = self.say("alice", "日语N2过了")
+        other = self.say("bob", "我在学法语")
+        res = apply([self.add("self_disclosure", "在学法语", [self.ev(other)], subject="bob"),
+                     Op("reinforce", claim_id=cid, evidence=[self.ev(n)]),
+                     Op("reinforce", claim_id=cid, evidence=[self.ev(n)])], self.ctx())
+        self.assertEqual((res["applied"], [r[2].split(":")[0] for r in res["rejected"]]), (2, ["duplicate"]))
+        self.assertIn("在学法语", [c["text"] for c in self.claims()])
+        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM evidence WHERE msg_id=?", (n,)).fetchone()[0], 1)
+
+    def test_promotion_respects_caps(self):
+        m = self.say("bob", "alice是做芯片的")
+        apply([self.add("identity", "alice做芯片", [self.ev(m)])], self.ctx())
+        cand = self.claims()[0]["claim_id"]
+        for i in range(12):
+            mi = self.say("alice", f"我有第{i}个爱好")
+            apply([self.add("self_disclosure", f"爱好{i}", [self.ev(mi)])], self.ctx())
+        own = self.say("alice", "对 我是做芯片的")
+        apply([Op("reinforce", claim_id=cand, evidence=[self.ev(own)])], self.ctx())
+        st = self.store.db.execute("SELECT status FROM claims WHERE claim_id=?", (cand,)).fetchone()[0]
+        self.assertEqual(st, "candidate")  # corroborated, but the person is at 12
+        diff = json.loads(self.store.db.execute("SELECT diff_json FROM dream_runs ORDER BY run_id DESC").fetchone()[0])
+        self.assertIn("12 claims", diff[0]["kept_candidate"])
+
+    def test_revise_needs_the_types_authority(self):
+        m = self.say("alice", "我不想聊前任")
+        apply([self.add("boundary", "alice不想聊前任", [self.ev(m)])], self.ctx())
+        cid = self.claims()[0]["claim_id"]
+        b = self.say("bob", "alice说她其实不想聊工作，前任可以聊")
+        op = lambda: Op("revise", claim_id=cid, text="alice不想聊工作",  # noqa: E731
+                        evidence=[self.ev(b, "不想聊工作")], contra=[self.ev(b, "前任可以聊")])
+        self.assertEqual(self.first_fail(op()).check, "corroborate")
+        apply([op()], self.ctx())
+        self.assertEqual(self.claims()[0]["text"], "alice不想聊前任")
+        a = self.say("alice", "我改主意了，前任可以聊，别聊工作就行")
+        self.assertIsNone(self.first_fail(Op("revise", claim_id=cid, text="alice不想聊工作",
+                                             evidence=[self.ev(a, "别聊工作就行")],
+                                             contra=[self.ev(a, "前任可以聊")])))
+
+    def test_revert_keeps_evidence_authors_past_retention(self):
+        # with #12's schema v3: purge -> new change -> undo it -> forget
+        try:
+            self.store.db.execute("ALTER TABLE evidence ADD COLUMN author_id INTEGER")
+        except Exception:
+            pass
+        m = self.say("bob", "alice是做芯片的", ts=T0)
+        m2 = self.say("carol", "对 alice做芯片", ts=T0 + 60)
+        apply([self.add("identity", "alice做芯片", [self.ev(m), self.ev(m2)])], self.ctx())
+        cid = self.claims()[0]["claim_id"]
+        authors = lambda: sorted(r[0] for r in self.store.db.execute(  # noqa: E731
+            "SELECT author_id FROM evidence WHERE claim_id=?", (cid,)))
+        self.assertEqual(authors(), sorted([self.p["bob"], self.p["carol"]]))
+        self.store.db.execute("DELETE FROM messages WHERE ts<?", (T0 + 3600,))  # aged out
+        n = self.say("alice", "我是做芯片的", ts=T0 + 10 * DAY)
+        run = apply([Op("reinforce", claim_id=cid, evidence=[self.ev(n)])], self.ctx())
+        revert(self.store, run["run_id"])
+        self.assertEqual(authors(), sorted([self.p["bob"], self.p["carol"]]))
+
     # ---------------------------------------------------------------- apply / revert
     def claims(self):
         return [dict(r) for r in self.store.db.execute(
