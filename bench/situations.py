@@ -15,7 +15,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from ._core import Msg
+from ._core import Msg, stored_moments
 
 SHOULD = ("quiet", "react", "reply")
 
@@ -45,38 +45,11 @@ class Recording:
 def from_store(store, scope_id: str, *, since_ts: int = 0, until_ts: int | None = None,
                name: str = "live", bot_uids=frozenset()) -> Recording:
     """bot_uids: other bots in the group (config other_bot_ids), tagged from_bot."""
-    rows = store.messages_in(scope_id, since_ts, until_ts)
-    msgs: list[Msg] = []
-    for r in rows:
-        mentions = json.loads(r["mentions"]) if r["mentions"] else []
-        msgs.append(Msg(
-            msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
-            text="" if r["recalled"] else r["text"],
-            mentions_bot="bot" in mentions, reply_to=r["reply_to"],
-            reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
-            is_bot=bool(r["is_bot"]), from_bot=str(r["sender_uid"]) in bot_uids,
-        ))
-    msgs += _pokes_from_traces(store, scope_id, since_ts, until_ts)
-    msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))
+    msgs = stored_moments(store, scope_id, since_ts, until_ts, bot_uids=bot_uids)
     ids = {m.msg_id for m in msgs}
     labels = {k: v for k, v in store.labels().items() if k in ids}
     return Recording(name, "store", msgs, labels,
                      {"scope": scope_id, "since": since_ts, "until": until_ts})
-
-
-def _pokes_from_traces(store, scope_id, since_ts, until_ts) -> list[Msg]:
-    sql = "SELECT trace_id, ts, reasons FROM traces WHERE scope_id=? AND ts>=? AND ended_at='gate'"
-    args: list = [scope_id, since_ts]
-    if until_ts is not None:
-        sql += " AND ts<=?"
-        args.append(until_ts)
-    out = []
-    for r in store.db.execute(sql, args):
-        reasons = json.loads(r["reasons"])
-        if reasons.get("notice") == "poke":
-            out.append(Msg(msg_id=f"poke:{r['trace_id']}", ts=r["ts"], sender="?", text="[戳一戳]",
-                           kind="poke", poke_bot=bool(reasons.get("poked_bot"))))
-    return out
 
 
 # ---- saved recordings -----------------------------------------------------------

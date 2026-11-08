@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide
+from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide, limits
 from .situations import Recording
 from .splits import is_test
 
@@ -41,21 +41,22 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
            aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str = POLICY_VERSION) -> Run:
     steps, history = [], []
     scene = None
+    state = limits.LimitState()  # limits see every moment, not just the last CONTEXT
     for m in rec.messages:
         if m.scene != scene:
             # a new independent scenario: the policy must not see the previous one
             # (PR #5 review). Live recordings have no scenes, so this never fires there.
-            history, scene = [], m.scene
-        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases)
+            history, scene, state = [], m.scene, limits.LimitState()
+        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases, state=state)
         steps.append(Step(m, d, rec.labels.get(m.msg_id)))
+        state.observe(m)
         history.append(m)
     run = Run(rec, policy_version, steps, params={"aliases": list(aliases)})
     run.metrics = score(run)
     return run
 
 
-def is_direct(m: Msg) -> bool:
-    return (m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot
+is_direct = limits.is_direct  # one definition, shared with the policy's limits
 
 
 def _ratio(a: int, b: int) -> float | None:

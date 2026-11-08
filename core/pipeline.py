@@ -10,9 +10,13 @@ real SQLite store without AstrBot.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
+from . import limits
 from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, name_addressed
+from .limits import LimitState
+from .moments import stored_moments
 from .gate import GateConfig, gate
 from .perceive import perceive
 from .signals import compute as compute_signals, heat_step
@@ -33,11 +37,44 @@ class Pipeline:
         self.gate_cfg = gate_cfg
         self.admin_handler = admin_handler
         self.aliases = aliases
+        self._limits: dict[str, LimitState] = {}  # per group (task G)
 
-    def _shadow(self, m: Msg) -> dict[str, Any]:
-        d = decide(m, [], m.ts, aliases=self.aliases)
+    def _context(self, msg_id: str | None, n: int = 30) -> list[Msg]:
+        """The stored moments before msg_id, as decide sees them in replay (task G:
+        the limits read recent history). 阿灯's own messages aren't stored until
+        sending lands, so live this holds people and other bots only."""
+        if not msg_id:
+            return []
+        out = []
+        for r in self.store.before(msg_id, n):
+            mentions = json.loads(r["mentions"]) if r["mentions"] else []
+            out.append(Msg(
+                msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
+                text="" if r["recalled"] else r["text"], mentions_bot="bot" in mentions,
+                reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
+                from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
+            ))
+        return out
+
+    def _limit_state(self, scope_id: str, now: int, current: str | None) -> LimitState:
+        """One LimitState per group, kept in memory; on first use (e.g. after a
+        restart) it's rebuilt from today's stored moments, so the limits don't
+        reset with the process."""
+        st = self._limits.get(scope_id)
+        if st is None:
+            since = (limits.day_of(now) * 86400) - 8 * 3600  # start of today, UTC+8
+            past = [m for m in stored_moments(self.store, scope_id, since, now, bot_uids=self.gate_cfg.bot_uids)
+                    if m.msg_id != current]
+            st = self._limits[scope_id] = LimitState.from_moments(past)
+        return st
+
+    def _shadow(self, m: Msg, scope_id: str, observe: bool = True) -> dict[str, Any]:
+        st = self._limit_state(scope_id, m.ts, m.msg_id)
+        d = decide(m, self._context(m.msg_id), m.ts, aliases=self.aliases, state=st)
+        if observe:
+            st.observe(m)
         return {"would": d.action, "addressed": d.addressed, "address_kind": d.address_kind,
-                "signals": d.reasons.get("signals", []), "policy": d.policy}
+                "signals": d.reasons.get("signals", []), "rule": d.reasons.get("rule"), "policy": d.policy}
 
     def _signals(self, ev: ChatEvent, p, pid: int, reply_to_bot: bool, from_bot: bool) -> dict[str, Any]:
         """Cheap per-message signals (task D). Record-only: stored and traced, acted on by nobody yet."""
@@ -109,10 +146,16 @@ class Pipeline:
                 reasons["from_bot"] = ev.sender_uid in self.gate_cfg.bot_uids
             elif ev.notice_type == "poke":
                 reasons["poked_bot"] = bool(ev.self_id) and ev.notice_target == ev.self_id
+                # the poker as a person id, like message senders, so the limits and the
+                # bench see one person (PR #14 review); opted-out people aren't kept
+                sender = "?"
+                if ev.sender_uid and ev.sender_uid not in self.gate_cfg.opted_out_uids:
+                    reasons["actor"] = self.store.person(ev.platform, ev.sender_uid, None, ev.ts)
+                    sender = str(reasons["actor"])
                 reasons["shadow"] = self._shadow(Msg(
-                    msg_id="", ts=ev.ts, sender=ev.sender_uid, text="[戳一戳]", kind="poke",
-                    poke_bot=reasons["poked_bot"],
-                ))
+                    msg_id="", ts=ev.ts, sender=sender, text="[戳一戳]", kind="poke",
+                    poke_bot=reasons["poked_bot"], from_bot=ev.sender_uid in self.gate_cfg.bot_uids,
+                ), ev.scope_id)
             self.store.trace(
                 scope_id=ev.scope_id, msg_id=trace_msg, ended_at="gate", decision=None,
                 reasons=reasons, harness_version=HARNESS_VERSION, ts=ev.ts,
@@ -142,7 +185,7 @@ class Pipeline:
             msg_id=ev.msg_id, ts=ev.ts, sender=str(pid), text=p.text,
             mentions_bot=p.mentions_bot, reply_to=p.reply_to,
             reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
-        ))
+        ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
         reasons = {
             "gate": verdict.reason,

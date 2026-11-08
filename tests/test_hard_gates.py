@@ -74,24 +74,18 @@ class HardGateFixtureTests(unittest.TestCase):
         m = replay(self.rec).metrics
         self.assertEqual(m["explicit_missed"], 0)
         self.assertIn("dm_admin", m["expects"])
-        # the baseline answers any @, so it keeps a bot exchange going: M2 must fix this
-        self.assertEqual(m["bot_loop_breaks"], 2)
-        self.assertFalse(m["gates"]["no_bot_loop"])
+        # task G: the baseline's loop limits hold B01-03/04 back, so the gate passes
+        self.assertEqual(m["bot_loop_breaks"], 0)
+        self.assertTrue(m["gates"]["no_bot_loop"])
+        self.assertEqual({s.msg.msg_id: s.decision.reasons["rule"] for s in replay(self.rec).steps
+                          if s.msg.msg_id in ("B01-01", "B01-03", "B01-04")},
+                         {"B01-01": "direct", "B01-03": "bot_loop", "B01-04": "bot_loop"})
 
-        def loop_aware(msg, ctx, now, **kw):
-            """Toy version of the rule: no second reply to a bot until a human speaks."""
-            d = decide(msg, ctx, now, **kw)
-            if msg.from_bot:
-                since_human = []
-                for c in reversed(ctx):
-                    if not c.is_bot and not c.from_bot:
-                        break
-                    since_human.append(c)
-                if any(c.is_bot for c in since_human):
-                    d.action = "quiet"
-            return d
+        def answers_any_at(msg, ctx, now, **kw):
+            """Without the limits (no history, no counts): the gate must still catch it."""
+            return decide(msg, [], now, aliases=kw.get("aliases", ()), bot_replies_today={})
 
-        self.assertEqual(replay(self.rec, policy=loop_aware).metrics["bot_loop_breaks"], 0)
+        self.assertEqual(replay(self.rec, policy=answers_any_at).metrics["bot_loop_breaks"], 2)
 
     def test_scenes_isolated(self):
         seen = []

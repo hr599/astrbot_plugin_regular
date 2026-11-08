@@ -8,6 +8,8 @@ import sqlite3
 import tempfile
 import time
 import unittest
+
+from core.decide import POLICY_VERSION
 import zipfile
 from pathlib import Path
 
@@ -71,7 +73,7 @@ class ShadowTests(unittest.TestCase):
         self.assertEqual(out.reasons["shadow"]["would"], "reply")
         self.assertIsNone(out.admin_reply)
         t = self.s.recent_traces(1)[0]
-        self.assertEqual((t["decision"], t["harness_version"]), ("quiet", "m1-baseline"))
+        self.assertEqual((t["decision"], t["harness_version"]), ("quiet", POLICY_VERSION))
 
     def test_quote_of_bot_message(self):
         self.s.scope(SCOPE, "aiocqhttp", "group")
