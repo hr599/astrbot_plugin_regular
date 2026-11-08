@@ -26,7 +26,7 @@ ID_KEYS = {
 # xml, markdown segments) under generic keys like "data" or "content".
 SAFE_KEYS = {
     # OneBot structure
-    "post_type", "message_type", "notice_type", "sub_type", "request_type",
+    "post_type", "message_type", "notice_type", "sub_type", "subType", "request_type",
     "meta_event_type", "type", "time", "font", "message_format", "emoji_id",
     "count", "face_type", "duration", "file_size", "role", "level",
     # our trace / dump notes
