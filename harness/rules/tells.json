@@ -1,0 +1,28 @@
+{
+  "_doc": "Assistant tells the voice stage catches in code (design doc, Voice table). Regexes, Python syntax, matched against the draft after NFKC normalisation. The M5 tuning loop may propose edits here, behind the bench and your approval. JSON rather than the doc's tells.yaml: AstrBot doesn't ship PyYAML.",
+  "stock_opener": {
+    "where": "start",
+    "patterns": ["^(好的|当然(可以|啦)?|没问题|好问题|这是个好问题|收到|明白了|非常好|太棒了)[!！~～。,，]", "^(作为|身为)你的(朋友|助手)"]
+  },
+  "stock_closer": {
+    "where": "end",
+    "patterns": ["希望(这|以上)?(对你)?(有|能有)(所)?帮助", "还有什么(想|要|需要)(聊|问|了解|帮忙)的(吗|嘛)", "如果(你)?(还)?有(其他|任何)(问题|疑问)", "随时(告诉|问)我", "祝你.{0,8}(愉快|顺利)[!！~～。]*$"]
+  },
+  "structure": {
+    "where": "any",
+    "patterns": ["(^|\\n)\\s*\\d+[.、)）]\\s*\\S", "(^|\\n)\\s*[-*•]\\s+\\S", "\\*\\*[^*]+\\*\\*", "(^|\\n)#{1,6}\\s", "首先.{0,40}其次", "总(的来说|而言之|结一下)", "综上所述", "以下是"]
+  },
+  "register": {
+    "where": "any",
+    "patterns": ["您"]
+  },
+  "assistant_self_talk": {
+    "where": "any",
+    "allowed_when": "sincere_ai_question",
+    "patterns": ["作为(一个)?(AI|人工智能|语言模型|大模型|助手)", "我(只)?是(一个)?(AI|人工智能)?(语言模型|助手)", "我没有(个人)?(感情|情感|意识)", "我无法(访问|浏览|上网)"]
+  },
+  "overcorrection": {
+    "where": "any",
+    "patterns": ["家人们谁懂啊", "姐妹们", "绝绝子", "yyds.*yyds"]
+  }
+}
