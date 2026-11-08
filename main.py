@@ -80,7 +80,8 @@ class Regular(Star):
         # 阿灯 v2 (task M): the prompt files, plus the leak check's protected texts and canary
         self.persona = load_persona(self.data_dir)
         self.outbox = Outbox(str(config.get("send_mode", "off") or "off"),
-                             protected=self.persona.protected, canaries=self.persona.canaries)
+                             protected=self.persona.protected, canaries=self.persona.canaries,
+                             allowed=self.persona.examples)
         self._seed_send_cap()
         self._tasks: set[asyncio.Task] = set()
         self.admin = AdminCommands(

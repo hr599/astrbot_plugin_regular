@@ -57,11 +57,12 @@ class Prepared:
 
 class Outbox:
     def __init__(self, mode: str = "off", *, rules: dict[str, Any] | None = None,
-                 protected: list[str] = (), canaries: list[str] = ()) -> None:
+                 protected: list[str] = (), canaries: list[str] = (), allowed: list[str] = ()) -> None:
         self.mode = mode if mode in MODES else "off"
         self.rules = rules
         self.protected = list(protected)
         self.canaries = list(canaries)
+        self.allowed = list(allowed)  # the persona's example lines (voice.leaked)
         self.queue: deque[Job] = deque()
         self._sent: dict[str, deque] = {}  # scope -> part timestamps (sent or dry), rolling hour
         self._reserved: dict[str, int] = {}  # scope -> parts queued or in flight, not yet sent
@@ -107,7 +108,7 @@ class Outbox:
         admin = origin == "admin_say"
         # the admin's own words: checked against themselves for specifics, so only
         # safety and style tells can hit, and style doesn't block
-        d = check(text, protected=self.protected, canaries=self.canaries,
+        d = check(text, protected=self.protected, canaries=self.canaries, allowed=self.allowed,
                   context=text if admin else context, attempt=0, rules=self.rules)
         if d.verdict in ("dodge", "drop"):
             return Prepared(None, d.hits, refused="blocked by the voice check: "
