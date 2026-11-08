@@ -42,10 +42,24 @@ def make_call(context):
         messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
         kw: dict[str, Any] = {"model": model, "messages": messages, "stream": False,
                               limit_key(model): int(params["max_tokens"])}
-        if params.get("temperature") is not None:
+        extra_body = dict(params.get("extra_body") or {})
+        think = params.get("thinking")
+        openai_style = limit_key(model) == "max_completion_tokens"
+        if openai_style:
+            # GPT reasoning models: reasoning_effort none | low | ... | max (default medium)
+            if think:
+                kw["reasoning_effort"] = "none" if think == "off" else think
+        elif think:
+            # DeepSeek: thinking is on by default; off = {"thinking": {"type": "disabled"}},
+            # otherwise enabled with reasoning_effort low | high | max
+            extra_body["thinking"] = {"type": "disabled" if think == "off" else "enabled"}
+            if think != "off":
+                kw["reasoning_effort"] = think
+        # sampling settings only apply without thinking (DeepSeek ignores them, GPT rejects them)
+        if params.get("temperature") is not None and think in (None, "off"):
             kw["temperature"] = params["temperature"]
-        if params.get("extra_body"):
-            kw["extra_body"] = dict(params["extra_body"])
+        if extra_body:
+            kw["extra_body"] = extra_body
         comp = await create(**kw)
         u = getattr(comp, "usage", None)
         prompt_tokens = int(getattr(u, "prompt_tokens", 0) or 0)
@@ -53,11 +67,13 @@ def make_call(context):
         if cached is None:
             cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0)  # OpenAI
         cached = int(cached or 0)
+        reasoning = int(getattr(getattr(u, "completion_tokens_details", None), "reasoning_tokens", 0) or 0)
         usage = Usage(input_other=max(0, prompt_tokens - cached), input_cached=cached,
-                      output=int(getattr(u, "completion_tokens", 0) or 0))
+                      output=int(getattr(u, "completion_tokens", 0) or 0), reasoning=reasoning)
         choices = getattr(comp, "choices", None) or []
-        text = (getattr(getattr(choices[0], "message", None), "content", None) or "") if choices else ""
-        return text, usage
+        first = choices[0] if choices else None
+        text = (getattr(getattr(first, "message", None), "content", None) or "") if first else ""
+        return text, usage, getattr(first, "finish_reason", None)
     return call
 
 

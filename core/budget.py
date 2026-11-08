@@ -60,6 +60,7 @@ class Usage:
     input_other: int = 0  # input tokens that missed the provider's cache
     input_cached: int = 0
     output: int = 0
+    reasoning: int = 0  # part of output spent thinking (diagnostics only: output already counts it)
 
 
 def cost_usd(model: str, usage: Usage, ts: int, prices: dict[str, Any], *, force_peak: bool = False) -> float:
@@ -153,15 +154,16 @@ class Budget:
         self._pending[bucket] = max(0.0, self._pending.get(bucket, 0.0) - est)
 
     def record(self, *, role: str, model: str, usage: Usage, ok: bool, latency_ms: int,
-               cached_response: bool = False, now: int | None = None) -> float:
+               cached_response: bool = False, now: int | None = None, finish_reason: str | None = None) -> float:
         now = int(time.time()) if now is None else now
         bucket = self.bucket_of(model)
         cost = 0.0 if cached_response else self.to_bucket(cost_usd(model, usage, now, self.prices), bucket)
         self.store.db.execute(
             """INSERT INTO model_calls (ts, role, model, bucket, input_other, input_cached, output, cost,
-                 currency, ok, cached_response, latency_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                 currency, ok, cached_response, latency_ms, finish_reason, reasoning_tokens)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (now, role, model, bucket, usage.input_other, usage.input_cached, usage.output, cost,
-             self.currency(bucket), int(ok), int(cached_response), latency_ms))
+             self.currency(bucket), int(ok), int(cached_response), latency_ms, finish_reason, usage.reasoning))
         return cost
 
     def summary(self, now: int | None = None) -> list[str]:

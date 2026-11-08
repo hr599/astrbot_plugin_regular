@@ -27,7 +27,14 @@ from typing import Any, Awaitable, Callable
 from .budget import Budget, BudgetExceeded, Usage, estimate_tokens  # noqa: F401  (re-exported)
 
 ROLES = ("decide", "reply", "caption", "dream", "judge")
-BUDGET_KEYS = {"max_tokens", "max_completion_tokens", "max_output_tokens", "n", "stream", "model", "messages"}
+# Thinking per role (design doc, Models by role). Both DeepSeek models think by
+# default, and thinking tokens count against max_tokens, so a short limit can end
+# with no answer at all (first live test, Nov 8). "off" = non-thinking mode; low /
+# high / max = reasoning effort. The judge reasons a little; the dream pass a lot.
+THINKING = ("off", "low", "high", "max")
+THINKING_DEFAULTS = {"decide": "off", "reply": "off", "caption": "off", "dream": "high", "judge": "low"}
+BUDGET_KEYS = {"max_tokens", "max_completion_tokens", "max_output_tokens", "n", "stream", "model", "messages",
+               "thinking", "reasoning_effort", "reasoning"}  # set through max_tokens= / thinking=
 
 
 @dataclass
@@ -38,15 +45,33 @@ class Result:
     cost: float
     cached: bool
     latency_ms: int
+    finish_reason: str | None = None
+
+    @property
+    def outcome(self) -> str:
+        """ok | empty | truncated. A call that completes isn't necessarily an answer:
+        callers must check this (the ledger's ok column follows it)."""
+        if self.finish_reason == "length":
+            return "truncated"
+        if not self.text.strip():
+            return "empty"
+        return "ok"
+
+    @property
+    def ok(self) -> bool:
+        return self.outcome == "ok"
 
 
-CallFn = Callable[[str, str, str, dict[str, Any]], Awaitable[tuple[str, Usage]]]
+# returns (text, usage) or (text, usage, finish_reason)
+CallFn = Callable[[str, str, str, dict[str, Any]], Awaitable[tuple]]
 
 
 class ModelClient:
     def __init__(self, budget: Budget, *, providers: dict[str, str], model_of: Callable[[str], str],
-                 call: CallFn, clock: Callable[[], float] = time.time) -> None:
+                 call: CallFn, clock: Callable[[], float] = time.time,
+                 thinking: dict[str, str] | None = None) -> None:
         self.budget = budget
+        self.thinking = {**THINKING_DEFAULTS, **(thinking or {})}
         self.providers = providers  # role -> AstrBot provider id
         self.model_of = model_of  # provider id -> model name (for pricing)
         self.call = call
@@ -65,14 +90,17 @@ class ModelClient:
 
     async def generate(self, role: str, *, system: str = "", prompt: str, max_tokens: int = 512,
                        temperature: float | None = None, cache: bool = False,
-                       extra: dict[str, Any] | None = None) -> Result:
+                       extra: dict[str, Any] | None = None, thinking: str | None = None) -> Result:
         pid = self.provider(role)
         model = self.model_of(pid)
         bad = BUDGET_KEYS & set(extra or {})
         if bad:  # the limit the budget checks must be the limit that's sent (#20)
             raise ValueError(f"extra can't set {sorted(bad)}: pass max_tokens instead")
         # one set of params: checked, sent and cached alike
-        params: dict[str, Any] = {"max_tokens": int(max_tokens)}
+        think = thinking or self.thinking.get(role, "off")
+        if think not in THINKING:
+            raise ValueError(f"thinking must be one of {THINKING}")
+        params: dict[str, Any] = {"max_tokens": int(max_tokens), "thinking": think}
         if temperature is not None:
             params["temperature"] = temperature
         if extra:
@@ -82,28 +110,32 @@ class ModelClient:
         store = self.budget.store
         if key:
             hit = store.cache_get(key)
-            if hit is not None:
+            if hit is not None:  # only usable answers are ever cached
                 u = Usage(**json.loads(hit["usage"])) if hit["usage"] else Usage()
                 self.budget.record(role=role, model=model, usage=u, ok=True, latency_ms=0,
-                                   cached_response=True, now=now)
-                return Result(hit["text"], model, u, 0.0, True, 0)
+                                   cached_response=True, now=now, finish_reason="stop")
+                return Result(hit["text"], model, u, 0.0, True, 0, "stop")
         gen = getattr(store, "cache_gen", 0)  # a forget during the call voids its cache write (#20)
         bucket, est = self.budget.reserve(model, system + prompt, params["max_tokens"], now)  # BudgetExceeded
         t0 = self.clock()
         try:
             try:
-                text, usage = await self.call(pid, system, prompt, params)
+                out = await self.call(pid, system, prompt, params)
             except Exception:
                 self.budget.record(role=role, model=model, usage=Usage(), ok=False,
                                    latency_ms=int((self.clock() - t0) * 1000), now=now)
                 raise
+            text, usage = out[0] or "", out[1]
+            finish = out[2] if len(out) > 2 else None
             ms = int((self.clock() - t0) * 1000)
-            cost = self.budget.record(role=role, model=model, usage=usage, ok=True, latency_ms=ms, now=now)
+            res = Result(text, model, usage, 0.0, False, ms, finish)
+            res.cost = self.budget.record(role=role, model=model, usage=usage, ok=res.ok, latency_ms=ms,
+                                          now=now, finish_reason=finish)
         finally:
             self.budget.release(bucket, est)  # also on cancellation
-        if key and getattr(store, "cache_gen", 0) == gen:
+        if key and res.ok and getattr(store, "cache_gen", 0) == gen:
             store.cache_put(key, model, text, json.dumps(asdict(usage)), now)
-        return Result(text, model, usage, cost, False, ms)
+        return res
 
 
 class AsyncReply:
@@ -133,8 +165,11 @@ class ModelAdmin:
                 return "模型还没接上。"
 
             async def run() -> str:
+                think = self.client.thinking.get(role, "off")
+                # enough room for the answer, plus the thinking when the role thinks
+                limit = 64 if think == "off" else 2048
                 try:
-                    r = await self.client.generate(role, prompt="只回复两个字：收到", max_tokens=16)
+                    r = await self.client.generate(role, prompt="只回复两个字：收到", max_tokens=limit)
                 except BudgetExceeded as e:
                     return f"{role}: 没调用，超出今天的预算（{e}）"
                 except LookupError as e:
@@ -142,8 +177,10 @@ class ModelAdmin:
                 except Exception as e:  # noqa: BLE001 - surface it to the admin
                     return f"{role}: 调用失败 {type(e).__name__}: {str(e)[:200]}"
                 cur = self.budget.currency(self.budget.bucket_of(r.model))
-                return (f"{role} → {r.model}：{r.text.strip()[:40]!r}，{r.latency_ms} ms，"
-                        f"{r.usage.input_other + r.usage.input_cached}+{r.usage.output} tokens，"
-                        f"约 {r.cost:.5f} {cur}")
+                verdict = {"ok": "通过", "empty": "失败：没有回答文字", "truncated": "失败：输出被上限截断"}[r.outcome]
+                return (f"{role} → {r.model}（思考 {think}，上限 {limit}）：{verdict}\n"
+                        f"回答 {r.text.strip()[:40]!r}，结束原因 {r.finish_reason or '未知'}，"
+                        f"{r.usage.input_other + r.usage.input_cached}+{r.usage.output} tokens"
+                        f"（其中思考 {r.usage.reasoning}），{r.latency_ms} ms，约 {r.cost:.5f} {cur}")
             return AsyncReply(run, placeholder=f"正在试 {role}…")
         return None
