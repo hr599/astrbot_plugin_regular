@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide
+from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide, limits
 from .situations import Recording
 from .splits import is_test
 
@@ -41,13 +41,18 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
            aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str = POLICY_VERSION) -> Run:
     steps, history = [], []
     scene = None
+    day, counts = None, {}  # 阿灯's replies to each other bot today (the whole day, not just CONTEXT)
     for m in rec.messages:
         if m.scene != scene:
             # a new independent scenario: the policy must not see the previous one
             # (PR #5 review). Live recordings have no scenes, so this never fires there.
-            history, scene = [], m.scene
-        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases)
+            history, scene, counts = [], m.scene, {}
+        if limits.day_of(m.ts) != day:
+            day, counts = limits.day_of(m.ts), {}
+        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases, bot_replies_today=dict(counts))
         steps.append(Step(m, d, rec.labels.get(m.msg_id)))
+        if m.is_bot and history and history[-1].from_bot:
+            counts[history[-1].sender] = counts.get(history[-1].sender, 0) + 1
         history.append(m)
     run = Run(rec, policy_version, steps, params={"aliases": list(aliases)})
     run.metrics = score(run)

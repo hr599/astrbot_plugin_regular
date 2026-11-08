@@ -9,6 +9,10 @@ version has something honest to beat on the bench. It follows the design doc's
   score but does NOT force a reply, "because people also talk about the bot"
 - everything else -> quiet
 
+Task G adds limits that can hold a due reply back (core/limits.py): no
+bot-to-bot chains without a person in between, a daily cap per other bot, and
+a react instead of a reply when one person bursts @s.
+
 No model calls, no time-of-day rhythm yet. `now` is passed in (never read from
 the system clock) so the bench can replay on a fake clock and get the same
 answer the live bot would have given.
@@ -20,7 +24,9 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-POLICY_VERSION = "m1-baseline"
+from . import limits
+
+POLICY_VERSION = "m1-baseline.2"  # .2: task G limits (bot loops, per-bot daily cap, @ bursts)
 
 DEFAULT_ALIASES = ("阿灯", "灯灯", "灯")
 
@@ -95,6 +101,7 @@ def decide(
     *,
     aliases: tuple[str, ...] = DEFAULT_ALIASES,
     threshold: float = 0.9,
+    bot_replies_today: dict[str, int] | None = None,
 ) -> Decision:
     """`context` = recent messages before `m`, oldest first (unused by the
     baseline; M2 policies read it). `now` = the clock the caller supplies."""
@@ -103,8 +110,22 @@ def decide(
     score, kind, why = addressed(m, aliases)
     action = "reply" if score >= threshold else "quiet"
     rule = "direct" if action == "reply" else ("likely_not_forced" if kind == "name" else "not_addressed")
-    return Decision(
-        action, score, kind,
-        {"rule": rule, "signals": why,
-         "context_len": len(context), "now": now},
-    )
+    reasons: dict[str, Any] = {"rule": rule, "signals": why, "context_len": len(context), "now": now}
+    if action == "reply":
+        # task G: limits that hold a due reply back (core/limits.py)
+        if m.from_bot:
+            counts = bot_replies_today if bot_replies_today is not None else limits.bot_replies_today(context, now)
+            if limits.answered_bot_since_human(context):
+                action, reasons["rule"] = "quiet", "bot_loop"
+            elif counts.get(m.sender, 0) >= limits.BOT_DAILY_CAP:
+                action, reasons["rule"] = "quiet", "bot_daily_cap"
+        elif kind == "explicit":
+            burst = limits.direct_burst(m, context, now, is_direct)
+            if burst >= limits.SPAM_MAX:
+                action, reasons["rule"] = "react", "rate_limited"
+                reasons["burst"] = burst
+    return Decision(action, score, kind, reasons)
+
+
+def is_direct(m: Msg) -> bool:
+    return bool(m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot

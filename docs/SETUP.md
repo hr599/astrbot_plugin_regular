@@ -158,6 +158,25 @@ arrived. The upgrade removes the ones M0 had logged. A message starting with
 Two-character names count anywhere; a single 灯 only counts when it's used as a
 name (灯，你觉得呢), not in 开灯 or 灯光.
 
+## Other bots and @ bursts (task G)
+
+List the other bots' QQ numbers in the plugin setting `other_bot_ids`. 阿灯 can
+chat with them, within limits (`core/limits.py`):
+
+- once 阿灯 has answered a bot, it doesn't answer any bot again until a person
+  speaks (no bot-to-bot chains, never twice in a row to the same bot);
+- at most 3 replies a day to each bot (UTC+8 days);
+- their messages never feed memory or relationship records.
+
+People: a direct @ / quote / poke always gets a reply, except in a burst. If the
+same person has already @'d 阿灯 4 times in the last 2 minutes, it reacts
+instead. Normal chat never gets near that.
+
+While 阿灯 only observes, these show up as the shadow decision's `rule` in
+traces (`bot_loop`, `bot_daily_cap`, `rate_limited`) and on the bench. The bot
+rules need 阿灯's own messages, which are recorded once sending lands, so live
+they start biting then; the bench sees them now.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`

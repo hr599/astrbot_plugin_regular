@@ -10,6 +10,7 @@ real SQLite store without AstrBot.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, name_addressed
@@ -34,10 +35,27 @@ class Pipeline:
         self.admin_handler = admin_handler
         self.aliases = aliases
 
+    def _context(self, msg_id: str | None, n: int = 30) -> list[Msg]:
+        """The stored moments before msg_id, as decide sees them in replay (task G:
+        the limits read recent history). 阿灯's own messages aren't stored until
+        sending lands, so live this holds people and other bots only."""
+        if not msg_id:
+            return []
+        out = []
+        for r in self.store.before(msg_id, n):
+            mentions = json.loads(r["mentions"]) if r["mentions"] else []
+            out.append(Msg(
+                msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
+                text="" if r["recalled"] else r["text"], mentions_bot="bot" in mentions,
+                reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
+                from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
+            ))
+        return out
+
     def _shadow(self, m: Msg) -> dict[str, Any]:
-        d = decide(m, [], m.ts, aliases=self.aliases)
+        d = decide(m, self._context(m.msg_id), m.ts, aliases=self.aliases)
         return {"would": d.action, "addressed": d.addressed, "address_kind": d.address_kind,
-                "signals": d.reasons.get("signals", []), "policy": d.policy}
+                "signals": d.reasons.get("signals", []), "rule": d.reasons.get("rule"), "policy": d.policy}
 
     def _signals(self, ev: ChatEvent, p, pid: int, reply_to_bot: bool, from_bot: bool) -> dict[str, Any]:
         """Cheap per-message signals (task D). Record-only: stored and traced, acted on by nobody yet."""

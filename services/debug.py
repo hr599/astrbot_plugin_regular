@@ -32,7 +32,7 @@ SAFE_KEYS = {
     # our trace / dump notes
     "at", "action", "gate", "notice", "stored", "mentions_bot", "replied_to",
     "command_like", "injection_flags", "media", "m0", "mode", "shadow", "would", "addressed",
-    "address_kind", "signals", "policy", "recalled_found",
+    "address_kind", "signals", "policy", "rule", "burst", "recalled_found",
     "poked_bot", "reply_found", "reply_to_bot", "signals", "cues", "salience", "heat",
     "crisis_joking", "rude_to_bot", "self_disclosure", "correction", "heat_cue", "from_bot",
     "is_add", "target_found", "emoji_ids", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
