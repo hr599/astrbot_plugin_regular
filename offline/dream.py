@@ -65,6 +65,13 @@ class Ctx:
     admin_uids: set[str] = field(default_factory=set)
     bot_uids: set[str] = field(default_factory=set)
     _msgs: dict[str, Any] = field(default_factory=dict)
+    # this batch so far: (op, status) for adds that will be written, so duplicate
+    # and cap checks see them (PR #11 review)
+    pending: list[tuple[Op, str]] = field(default_factory=list)
+
+    def note(self, op: Op, demoted: bool) -> None:
+        if op.kind == "add":
+            self.pending.append((op, "candidate" if demoted else "validated"))
 
     def msg(self, msg_id: str):
         if msg_id not in self._msgs:
@@ -82,6 +89,27 @@ class Ctx:
 
 
 # ---------------------------------------------------------------- checks
+def check_target(op: Op, ctx: Ctx):
+    """reinforce/revise/retire/merge act on an existing claim: every later check uses
+    that claim's real type and people, never what the proposal says (PR #11 review:
+    a revise labelled "boundary" slipped sensitive text onto a self_disclosure).
+    A proposal whose metadata disagrees with the target is rejected; changing a
+    claim's type means retiring it and adding a new one, which runs every check."""
+    if op.kind not in ("reinforce", "revise", "retire", "merge"):
+        return None
+    c = ctx.claim(op.claim_id)
+    if c is None:
+        return Verdict("shape", "target claim not found in this scope")
+    if op.type and op.type != c["type"]:
+        return Verdict("shape", f"type {op.type!r} doesn't match the target's {c['type']!r}")
+    if op.subject is not None and op.subject != c["subject_id"]:
+        return Verdict("shape", "subject doesn't match the target")
+    if op.object is not None and op.object != c["object_id"]:
+        return Verdict("shape", "object doesn't match the target")
+    op.type, op.subject, op.object = c["type"], c["subject_id"], c["object_id"]
+    return None
+
+
 def check_shape(op: Op, ctx: Ctx):
     if op.kind not in KINDS:
         return Verdict("shape", f"unknown op kind {op.kind!r}")
@@ -129,13 +157,22 @@ def check_verbatim(op: Op, ctx: Ctx):
     return None
 
 
+_CLAUSE = re.compile(r"[，,。.；;！!？?\n]+")
+
+
 def check_imperative(op: Op, ctx: Ctx):
     if op.kind not in ("add", "revise"):
         return None
-    if op.type == "boundary" and _ALLOWED_PREFERENCE.search(op.text):
-        return None  # preferred name / topic to avoid, stored as an attributed fact
-    if _IMPERATIVE.search(op.text) or injection_flags(op.text):
+    if injection_flags(op.text):  # never exempt
         return Verdict("imperative", "reads as an instruction to the bot")
+    for clause in _CLAUSE.split(op.text):
+        # the exemption covers only the clause that is the preference itself
+        # (PR #11 review: "alice不想聊前任；<instruction>" passed whole)
+        if op.type == "boundary" and _ALLOWED_PREFERENCE.search(clause) and not _IMPERATIVE.search(
+                _ALLOWED_PREFERENCE.sub("", clause)):
+            continue
+        if _IMPERATIVE.search(clause):
+            return Verdict("imperative", "reads as an instruction to the bot")
     return None
 
 
@@ -151,26 +188,25 @@ def check_computed(op: Op, ctx: Ctx):
     return None
 
 
-def _speakers(op: Op, ctx: Ctx, evidence: list[Evidence]) -> list[int]:
-    return [ctx.msg(e.msg_id)["person_id"] for e in evidence]
-
-
-def check_corroboration(op: Op, ctx: Ctx):
-    """The evidence table in the design doc (Write path: Evidence rules)."""
-    if op.kind != "add":
-        return None
-    ev = op.evidence
-    speakers = _speakers(op, ctx, ev)
-    humans = [s for s, e in zip(speakers, ev) if not ctx.msg(e.msg_id)["is_bot"]]
-    distinct = set(humans)
-    sessions = {ctx.msg(e.msg_id)["session_id"] for e in ev if not ctx.msg(e.msg_id)["is_bot"]}
-    t = op.type
+def corroboration(type_: str, subject, object_, ev: list[Evidence], ctx: Ctx) -> Verdict | None:
+    """The evidence table in the design doc (Write path: Evidence rules). Evidence is
+    counted once per message, so citing the same message twice adds nothing; messages
+    already gone (retention) can't be re-checked and count for nothing here."""
+    uniq: dict[str, Evidence] = {}
+    for e in ev:
+        uniq.setdefault(e.msg_id, e)
+    rows = [(ctx.msg(e.msg_id), e) for e in uniq.values()]
+    rows = [(m, e) for m, e in rows if m is not None]
+    humans = [m for m, _ in rows if not m["is_bot"]]
+    distinct = {m["person_id"] for m in humans}
+    sessions = {m["session_id"] for m in humans}
+    t = type_
     if t in ("identity", "self_disclosure"):
-        if op.subject in distinct or len(distinct) >= 2:
+        if subject in distinct or len(distinct) >= 2:
             return None
         return Verdict("corroborate", "about a person: needs their own words or 2+ speakers", demote=True)
     if t == "relation":
-        if op.subject in distinct or op.object in distinct or len(distinct) >= 2:
+        if subject in distinct or object_ in distinct or len(distinct) >= 2:
             return None
         return Verdict("corroborate", "relation: needs either person's words or 2+ speakers", demote=True)
     if t == "joke":
@@ -178,22 +214,46 @@ def check_corroboration(op: Op, ctx: Ctx):
             return None
         return Verdict("corroborate", "running joke: 2+ humans in 2+ sessions", demote=True)
     if t == "boundary":
-        admins = {s for s, e in zip(speakers, ev) if str(ctx.msg(e.msg_id)["uid"]) in ctx.admin_uids}
-        if op.subject is None or op.subject in distinct or admins:
+        admins = {m["person_id"] for m in humans if str(m["uid"]) in ctx.admin_uids}
+        if subject is None or subject in distinct or admins:
             return None
         return Verdict("corroborate", "boundary: from the person concerned or an admin", demote=True)
     if t == "bot_self":
-        if all(ctx.msg(e.msg_id)["is_bot"] for e in ev):
+        if rows and all(m["is_bot"] for m, _ in rows):
             return None
         return Verdict("corroborate", "bot_self: only the bot's own past messages count")
     if t == "intention":
-        if any(re.search(r"\d|周[一二三四五六日天]|[一二三四五六七八九十]+月|明天|后天|下(周|个月)", e.quote) for e in ev):
+        if any(re.search(r"\d|周[一二三四五六日天]|[一二三四五六七八九十]+月|明天|后天|下(周|个月)", e.quote)
+               for _, e in rows):
             return None
         return Verdict("corroborate", "intention: needs a dated plan or promise")
     if t == "reflection":
-        if len(ev) >= 3 and len(sessions) >= 2:
+        if len(rows) >= 3 and len(sessions) >= 2:
             return None
         return Verdict("corroborate", "reflection: 3+ cited spans across 2+ sessions")
+    return None
+
+
+def _existing_support(ctx: Ctx, claim_id: int) -> list[Evidence]:
+    return [Evidence(r["msg_id"], r["quote"]) for r in ctx.store.db.execute(
+        "SELECT msg_id, quote FROM evidence WHERE claim_id=? AND stance='supports'", (claim_id,))]
+
+
+def check_corroboration(op: Op, ctx: Ctx):
+    if op.kind == "add":
+        return corroboration(op.type, op.subject, op.object, op.evidence, ctx)
+    return None
+
+
+def check_reinforce(op: Op, ctx: Ctx):
+    """Reinforcing must bring something new: a message not already cited on the
+    claim. Whether a candidate becomes validated is decided at apply time by
+    re-running the corroboration rule on old + new evidence (PR #11 review)."""
+    if op.kind != "reinforce":
+        return None
+    have = {e.msg_id for e in _existing_support(ctx, op.claim_id)}
+    if not [e for e in op.evidence if e.msg_id not in have]:
+        return Verdict("duplicate", "evidence already cited on this claim")
     return None
 
 
@@ -211,6 +271,9 @@ def _norm(s: str) -> str:
 def check_duplicate(op: Op, ctx: Ctx):
     if op.kind != "add":
         return None
+    for prev, _ in ctx.pending:
+        if prev.type == op.type and prev.subject == op.subject and _norm(prev.text) == _norm(op.text):
+            return Verdict("duplicate", "same as an earlier op in this batch")
     for r in ctx.store.db.execute(
             """SELECT text FROM claims WHERE scope_id=? AND status IN ('candidate','validated','dormant')
                AND type=? AND subject_id IS ?""", (ctx.scope_id, op.type, op.subject)):
@@ -223,21 +286,22 @@ def check_caps(op: Op, ctx: Ctx):
     if op.kind != "add":
         return None
     q = lambda sql, *a: ctx.store.db.execute(sql, a).fetchone()[0]  # noqa: E731
+    batch = [o for o, st in ctx.pending if st == "validated"]  # validated earlier in this batch
     if op.type == "joke" and q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND type='joke' AND status='validated'",
-                               ctx.scope_id) >= CAPS["joke"]:
+                               ctx.scope_id) + sum(o.type == "joke" for o in batch) >= CAPS["joke"]:
         return Verdict("caps", "10 active jokes: merge or retire one first")
     if op.subject is None:
         if q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id IS NULL AND status='validated'",
-             ctx.scope_id) >= CAPS["group"]:
+             ctx.scope_id) + sum(o.subject is None for o in batch) >= CAPS["group"]:
             return Verdict("caps", "20 group-level claims: merge or retire first")
     elif q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id=? AND status='validated'",
-           ctx.scope_id, op.subject) >= CAPS["person"]:
+           ctx.scope_id, op.subject) + sum(o.subject == op.subject for o in batch) >= CAPS["person"]:
         return Verdict("caps", "12 claims for this person: merge or retire first")
     return None
 
 
-CHECKS = [check_shape, check_evidence, check_verbatim, check_imperative, check_sensitive,
-          check_computed, check_corroboration, check_humans_only, check_duplicate, check_caps]
+CHECKS = [check_target, check_shape, check_evidence, check_verbatim, check_imperative, check_sensitive,
+          check_computed, check_corroboration, check_humans_only, check_reinforce, check_duplicate, check_caps]
 
 
 # ---------------------------------------------------------------- apply / audit / revert
@@ -247,6 +311,11 @@ def _snapshot(store, claim_id: int) -> dict | None:
         return None
     ev = [dict(r) for r in store.db.execute("SELECT * FROM evidence WHERE claim_id=?", (claim_id,))]
     return {"claim": dict(row), "evidence": ev}
+
+
+def _add_ev(db, claim_id: int, e: Evidence, stance: str) -> None:
+    db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,?)",
+               (claim_id, e.msg_id, e.quote, stance))
 
 
 def _source(op: Op, ctx: Ctx) -> str:
@@ -263,13 +332,13 @@ def _insert_claim(ctx: Ctx, op: Op, status: str, run_id: int, expires: int | Non
         (ctx.scope_id, op.subject, op.object, op.type, op.text, status, _source(op, ctx), ctx.now,
          max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), expires, run_id)).lastrowid
     for e in op.evidence:
-        ctx.store.db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,'supports')",
-                             (cid, e.msg_id, e.quote))
+        _add_ev(ctx.store.db, cid, e, "supports")
     return cid
 
 
 def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
     """Review, then apply in one transaction. Returns the run summary."""
+    ctx.pending = []  # batch state is per apply() call
     outcome: Outcome = review(ops, CHECKS, ctx)
     db = ctx.store.db
     db.execute("BEGIN")
@@ -285,22 +354,32 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
                 cid = _insert_claim(ctx, op, "validated", run_id, None)
                 touched = [cid]
             elif op.kind == "reinforce":
-                db.execute("""UPDATE claims SET strength=MIN(1.0, strength+0.25), status='validated',
+                have = {e.msg_id for e in _existing_support(ctx, op.claim_id)}
+                fresh = [e for e in op.evidence if e.msg_id not in have]
+                cur = ctx.claim(op.claim_id)
+                # a candidate is promoted only if old + new evidence now meets its rule
+                status = cur["status"]
+                if status in ("candidate", "dormant"):
+                    ok = corroboration(cur["type"], cur["subject_id"], cur["object_id"],
+                                       _existing_support(ctx, op.claim_id) + fresh, ctx) is None
+                    status = "validated" if ok else status
+                db.execute("""UPDATE claims SET strength=MIN(1.0, strength+0.25), status=?,
+                              expires=CASE WHEN ?='validated' THEN NULL ELSE expires END,
                               last_evidence=?, run_id=? WHERE claim_id=?""",
-                           (max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), run_id, op.claim_id))
-                for e in op.evidence:
-                    db.execute("INSERT INTO evidence VALUES (?,?,?,'supports')", (op.claim_id, e.msg_id, e.quote))
+                           (status, status, max(ctx.msg(e.msg_id)["ts"] for e in fresh), run_id, op.claim_id))
+                for e in fresh:
+                    _add_ev(db, op.claim_id, e, "supports")
             elif op.kind == "revise":
                 db.execute("UPDATE claims SET text=?, last_evidence=?, run_id=? WHERE claim_id=?",
                            (op.text, max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), run_id, op.claim_id))
                 for e in op.evidence:
-                    db.execute("INSERT INTO evidence VALUES (?,?,?,'supports')", (op.claim_id, e.msg_id, e.quote))
+                    _add_ev(db, op.claim_id, e, "supports")
                 for e in op.contra:
-                    db.execute("INSERT INTO evidence VALUES (?,?,?,'contradicts')", (op.claim_id, e.msg_id, e.quote))
+                    _add_ev(db, op.claim_id, e, "contradicts")
             elif op.kind == "retire":
                 db.execute("UPDATE claims SET status='retired', run_id=? WHERE claim_id=?", (run_id, op.claim_id))
                 for e in op.contra:
-                    db.execute("INSERT INTO evidence VALUES (?,?,?,'contradicts')", (op.claim_id, e.msg_id, e.quote))
+                    _add_ev(db, op.claim_id, e, "contradicts")
             elif op.kind == "merge":
                 for mid in op.merge_ids:
                     db.execute("UPDATE evidence SET claim_id=? WHERE claim_id=?", (op.claim_id, mid))
@@ -354,8 +433,7 @@ def revert(store, run_id: int) -> int:
                 store.db.execute(f"UPDATE claims SET {cols} WHERE claim_id=?",
                                  [c[k] for k in c if k != "claim_id"] + [cid])
                 for e in snap["evidence"]:
-                    store.db.execute("INSERT INTO evidence VALUES (?,?,?,?)",
-                                     (cid, e["msg_id"], e["quote"], e["stance"]))
+                    _add_ev(store.db, cid, Evidence(e["msg_id"], e["quote"]), e["stance"])
             # merge moved the sources' evidence onto the target; restoring the target's
             # snapshot above put its own back, and the sources' snapshots restore theirs
         store.db.execute("UPDATE dream_runs SET reverted=1 WHERE run_id=?", (run_id,))

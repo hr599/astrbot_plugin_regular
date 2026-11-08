@@ -77,4 +77,9 @@ def review(ops: Iterable[Op], checks: list[Check], ctx: Any) -> Outcome:
             out.demoted.append((op, verdict))
         else:
             out.rejected.append((op, verdict))
+        # later ops in the same batch must see earlier ones (duplicates, caps):
+        # checking a batch must give the same answer as applying it op by op
+        note = getattr(ctx, "note", None)
+        if note is not None and (verdict is None or verdict.demote):
+            note(op, demoted=verdict is not None)
     return out
