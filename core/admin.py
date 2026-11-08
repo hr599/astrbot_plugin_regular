@@ -15,6 +15,9 @@ HELP = (
     "/reg label   标注一批消息（给 bench 当标准答案）；/reg label help 看说明\n"
     "/reg bench   用当前规则重放记录并打分\n"
     "/reg bench save [名字]  把最近的记录和标注存成一份 recording\n"
+    "/reg forget <QQ号>  删掉一个人的全部记录（先预览，再 confirm）\n"
+    "/reg optout|optin <QQ号>  不再记录 / 恢复记录某人\n"
+    "/reg pause|resume [群号]  暂停 / 恢复观察（不写群号 = 全部）\n"
     "/reg help"
 )
 
@@ -27,16 +30,20 @@ class AdminCommands:
         set_dump: Callable[[bool], None],
         labeler=None,
         bench: Callable[[list[str]], str] | None = None,
+        people=None,
     ):
         self.status = status
         self.debug_bundle = debug_bundle
         self.set_dump = set_dump
         self.labeler = labeler
         self.bench = bench
+        self.people = people
 
     def __call__(self, ev) -> str:
         words = ev.raw_text.strip().split()
         if words and words[0].lower() in ("/reg", "reg"):
+            words = words[1:]
+        if len(words) > 1 and words[0].lower() == "mem":  # /reg mem forget ... (design doc spelling)
             words = words[1:]
         sub = words[0].lower() if words else "help"
         arg = words[1].lower() if len(words) > 1 else ""
@@ -63,4 +70,8 @@ class AdminCommands:
                 return self.bench(words[1:])
             except Exception as e:
                 return f"bench 出错：{type(e).__name__}: {e}"
+        if self.people is not None:
+            out = self.people.handle(sub, words[1:], ev.platform)
+            if out is not None:
+                return out
         return HELP

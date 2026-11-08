@@ -17,7 +17,7 @@ try:  # inside the plugin package
 except ImportError:  # repo root on sys.path (tests, CLI)
     from core.perceive import is_command_like as _is_command_like
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
 # when its message is purged or recalled, unless it was saved into a recording), and
@@ -35,6 +35,14 @@ MIGRATIONS = {
     CREATE TABLE label_skips (
       msg_id TEXT PRIMARY KEY REFERENCES messages ON DELETE CASCADE
     );
+    """,
+    # v3 (PR #12 review): evidence remembers who said the quote. Evidence outlives
+    # transcript retention by design, so "forget this person" can't rely on the
+    # message row still being there to find their words.
+    3: """
+    ALTER TABLE evidence ADD COLUMN author_id INTEGER;
+    UPDATE evidence SET author_id=(SELECT person_id FROM messages m WHERE m.msg_id=evidence.msg_id)
+      WHERE author_id IS NULL;
     """,
 }
 SESSION_GAP_S = 30 * 60  # a pause this long starts a new session
@@ -369,7 +377,19 @@ class Store:
         ).fetchall()[::-1]
 
     def purge_before(self, cutoff_ts: int) -> int:
-        """Retention: delete transcripts older than cutoff. Returns rows deleted."""
+        """Retention: delete transcripts older than cutoff. Returns rows deleted.
+        Evidence keeps its quote (memory outlives transcripts) and gets its author
+        recorded first, so a later forget still finds it. Audit trails (dream run
+        snapshots, rejected proposals) that cite a purged message are cleared: undo
+        works within the retention window, and nothing in them outlives it unattributed."""
+        self.db.execute(
+            """UPDATE evidence SET author_id=(SELECT person_id FROM messages m WHERE m.msg_id=evidence.msg_id)
+               WHERE author_id IS NULL AND msg_id IN (SELECT msg_id FROM messages WHERE ts<?)""",
+            (cutoff_ts,),
+        )
+        purged = {r[0] for r in self.db.execute("SELECT msg_id FROM messages WHERE ts<?", (cutoff_ts,))}
+        if purged:
+            self._clear_audits(lambda blob: _mentions(blob, None, purged, set()))
         rows = self.db.execute(
             "SELECT rowid, text FROM messages WHERE ts<?", (cutoff_ts,)
         ).fetchall()
@@ -396,6 +416,119 @@ class Store:
             (cutoff_ts,),
         )
         return len(rows)
+
+    # ---- forget / opt-out (admin only, from the admin's DM) ----------------
+    def person_id_of(self, platform: str, uid: str) -> int | None:
+        row = self.db.execute("SELECT person_id FROM people WHERE platform=? AND platform_uid=?",
+                              (platform, uid)).fetchone()
+        return row[0] if row else None
+
+    def set_opted_out(self, platform: str, uid: str, on: bool) -> None:
+        pid = self.person_id_of(platform, uid)
+        if pid is None:
+            if not on:
+                return
+            pid = self.person(platform, uid, None, int(time.time()))
+        self.db.execute("UPDATE people SET opted_out=? WHERE person_id=?", (int(on), pid))
+
+    def forget_preview(self, platform: str, uid: str) -> dict[str, int]:
+        pid = self.person_id_of(platform, uid)
+        if pid is None:
+            return {}
+        q = lambda sql, *a: self.db.execute(sql, a).fetchone()[0]  # noqa: E731
+        return {
+            "messages": q("SELECT COUNT(*) FROM messages WHERE person_id=?", pid),
+            "claims": q("SELECT COUNT(*) FROM claims WHERE subject_id=? OR object_id=?", pid, pid),
+            "evidence": q("""SELECT COUNT(*) FROM evidence WHERE msg_id IN
+                             (SELECT msg_id FROM messages WHERE person_id=?)""", pid),
+            "names": q("SELECT COUNT(*) FROM aliases WHERE person_id=?", pid),
+        }
+
+    def _clear_audits(self, mentions) -> int:
+        runs = 0
+        for r in self.db.execute("SELECT run_id, diff_json FROM dream_runs WHERE diff_json!='[]'").fetchall():
+            if mentions(r["diff_json"]):
+                self.db.execute("UPDATE dream_runs SET diff_json='[]', reverted=1 WHERE run_id=?", (r["run_id"],))
+                runs += 1
+        for r in self.db.execute("SELECT rowid, proposal_json FROM rejected").fetchall():
+            if mentions(r["proposal_json"]):
+                self.db.execute("DELETE FROM rejected WHERE rowid=?", (r["rowid"],))
+        return runs
+
+    def forget_person(self, platform: str, uid: str, *, stop: bool = False) -> dict[str, Any]:
+        """Erase everything stored about one person, in one transaction: their messages
+        (and search index, media links, labels, traces), memory claims about them and
+        any evidence quoting them, episodes they took part in, the relationship record,
+        names and links. Dream runs that touched those claims lose their snapshots and
+        can no longer be reverted (a revert would bring the claims back). stop=True
+        also opts them out, so nothing new is recorded; otherwise a person who was
+        already opted out stays opted out."""
+        pid = self.person_id_of(platform, uid)
+        if pid is None:
+            if stop:
+                self.set_opted_out(platform, uid, True)
+            return {"found": False, "person_id": None, "opted_out": stop}
+        db = self.db
+        db.execute("BEGIN")
+        try:
+            msgs = [r[0] for r in db.execute("SELECT msg_id FROM messages WHERE person_id=?", (pid,))]
+            # their words that outlived the transcript, found through evidence authorship
+            mset = set(msgs) | {r[0] for r in db.execute("SELECT msg_id FROM evidence WHERE author_id=?", (pid,))}
+            rows = db.execute("SELECT rowid, text FROM messages WHERE person_id=?", (pid,)).fetchall()
+            for r in rows:
+                if r["text"]:
+                    db.execute("INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', ?, ?)",
+                               (r["rowid"], r["text"]))
+            sub = "(SELECT msg_id FROM messages WHERE person_id=?)"
+            for t in ("message_media", "labels", "label_skips", "traces", "episode_evidence"):
+                db.execute(f"DELETE FROM {t} WHERE msg_id IN {sub}", (pid,))
+            # memory: claims about them, then evidence quoting them in claims about others
+            gone = {r[0] for r in db.execute("SELECT claim_id FROM claims WHERE subject_id=? OR object_id=?",
+                                             (pid, pid))}
+            ev_mine = f"(author_id=? OR msg_id IN {sub})"
+            hit = {r[0] for r in db.execute(f"SELECT DISTINCT claim_id FROM evidence WHERE {ev_mine}", (pid, pid))}
+            db.execute(f"DELETE FROM evidence WHERE {ev_mine}", (pid, pid))
+            for cid in hit - gone:  # a claim left with nothing supporting it goes too
+                if not db.execute("SELECT 1 FROM evidence WHERE claim_id=? AND stance='supports'",
+                                  (cid,)).fetchone():
+                    gone.add(cid)
+            for cid in gone:
+                db.execute("DELETE FROM evidence WHERE claim_id=?", (cid,))
+                db.execute("DELETE FROM claims WHERE claim_id=?", (cid,))
+            # audit trails that could restore or show them
+            runs = self._clear_audits(lambda blob: _mentions(blob, pid, mset, gone))
+            # traces that name them as a reactor or as the one answered (task D signals)
+            db.execute("""DELETE FROM traces WHERE json_valid(reasons) AND
+                          (json_extract(reasons, '$.actor')=? OR json_extract(reasons, '$.signals.answers')=?)""",
+                       (pid, pid))
+            # episodes summarise a conversation as a whole: drop the ones they were in
+            eps = [r[0] for r in db.execute(
+                "SELECT episode_id FROM episodes, json_each(episodes.participants) WHERE json_each.value=?",
+                (pid,))]
+            for e in eps:
+                db.execute("DELETE FROM episode_evidence WHERE episode_id=?", (e,))
+                db.execute("DELETE FROM episodes WHERE episode_id=?", (e,))
+            db.execute(f"DELETE FROM relationship_events WHERE person_id=? OR msg_id IN {sub}", (pid, pid))
+            db.execute("DELETE FROM relationships WHERE person_id=?", (pid,))
+            sessions = {r[0] for r in db.execute("SELECT DISTINCT session_id FROM messages WHERE person_id=?", (pid,))}
+            db.execute("DELETE FROM messages WHERE person_id=?", (pid,))
+            for sid in sessions:
+                db.execute("UPDATE sessions SET n_msgs=(SELECT COUNT(*) FROM messages WHERE session_id=?) "
+                           "WHERE session_id=?", (sid, sid))
+            db.execute("DELETE FROM aliases WHERE person_id=?", (pid,))
+            db.execute("DELETE FROM person_links WHERE a=? OR b=?", (pid, pid))
+            was_out = bool(db.execute("SELECT opted_out FROM people WHERE person_id=?", (pid,)).fetchone()[0])
+            keep = stop or was_out
+            if keep:  # the row only remembers "don't record this uid"
+                db.execute("UPDATE people SET opted_out=1 WHERE person_id=?", (pid,))
+            else:
+                db.execute("DELETE FROM people WHERE person_id=?", (pid,))
+            db.execute("COMMIT")
+        except Exception:
+            db.execute("ROLLBACK")
+            raise
+        return {"found": True, "person_id": pid, "messages": len(msgs), "claims": len(gone),
+                "episodes": len(eps), "dream_runs_frozen": runs, "opted_out": keep}
 
     # ---- traces --------------------------------------------------------
     def trace(
@@ -443,3 +576,37 @@ class Store:
 def _fts_quote(q: str) -> str:
     return '"' + q.replace('"', '""') + '"'
 
+
+
+def _mentions(blob: str | None, pid: int, msg_ids: set[str], claim_ids: set[int]) -> bool:
+    """Does an audit JSON blob refer to this person, their messages, or claims being erased?"""
+    if not blob:
+        return False
+    try:
+        data = json.loads(blob)
+    except json.JSONDecodeError:
+        return True  # can't tell: treat as mentioning (erasing too much beats too little)
+    found = False
+
+    def walk(x, key=""):
+        nonlocal found
+        if found:
+            return
+        if isinstance(x, dict):
+            for k, v in x.items():
+                if k.isdigit() and int(k) in claim_ids:  # before/after snapshots keyed by claim id
+                    found = True
+                    return
+                walk(v, k)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v, key)
+        elif isinstance(x, str):
+            found = x in msg_ids
+        elif isinstance(x, int) and not isinstance(x, bool):
+            found = (pid is not None and key in ("subject", "object", "subject_id", "object_id", "person_id",
+                                                 "author_id") and x == pid) or \
+                    (key in ("claim_id", "merge_ids", "touched") and x in claim_ids)
+
+    walk(data)
+    return found
