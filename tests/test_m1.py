@@ -333,6 +333,69 @@ class ReviewRound2Tests(unittest.TestCase):
                     self.assertEqual(lab["should"], "reply", f"{r.name}:{x.msg_id}")
 
 
+class GroupScopeTests(unittest.TestCase):
+    """PR #4 review, round 3: label and save from the watched groups, not scopes[0]."""
+
+    A, B = "555", "777"
+
+    def _store(self, groups):
+        s = Store(":memory:")
+        return s, Pipeline(s, GateConfig(group_ids=set(groups)))
+
+    def test_empty_first_group_doesnt_block(self):
+        s, p = self._store({self.A, self.B})
+        p.handle(ev(group_msg("/help", group=self.A, mid=1)))  # creates scope A, stores nothing
+        p.handle(ev(group_msg("B 群的聊天", group=self.B, mid=2)))
+        lab = Labeler(s, rng=random.Random(0), scopes=lambda: s.group_scopes({self.A, self.B}))
+        msg = lab.next()
+        self.assertEqual(len(lab.pending), 1)
+        self.assertIn("B 群的聊天", msg)
+        self.assertIn(f"群 {self.B}", msg)  # group named when several are watched
+
+    def test_switched_group_uses_the_new_one(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("旧群 A 的聊天", group=self.A, mid=1)))
+        p = Pipeline(s, GateConfig(group_ids={self.B}))  # config changed to B, same db
+        p.handle(ev(group_msg("新群 B 的聊天", group=self.B, mid=2)))
+        self.assertEqual(p.handle(ev(group_msg("A 的新消息", group=self.A, mid=3))).action, "drop")
+        lab = Labeler(s, rng=random.Random(0), scopes=lambda: s.group_scopes({self.B}))
+        msg = lab.next()
+        self.assertIn("新群 B 的聊天", msg)
+        self.assertNotIn("旧群 A", msg)
+        self.assertNotIn("群 ", msg.split("【1】")[1].split("\n")[0])  # one group: no tag
+        lab.answer("5")
+        self.assertIn("没有待标注", lab.next())  # finished B; never falls back to old A
+
+    def test_save_uses_watched_groups(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("旧群 A", group=self.A, mid=1)))
+        p = Pipeline(s, GateConfig(group_ids={self.B}))
+        p.handle(ev(group_msg("新群 B", group=self.B, mid=2)))
+        with tempfile.TemporaryDirectory() as d:
+            out = bench_command(s, Path(d), ["save", "wk"], group_ids={self.B})
+            self.assertIn(f"群 {self.B}：存好了 1 条", out)
+            rec = load_saved(Path(d) / "bench" / "recordings")
+            self.assertEqual([m.text for m in rec[0].messages], ["新群 B"])
+            out = bench_command(s, Path(d), ["save", "wk2"], group_ids={self.A, self.B})
+            self.assertIn(f"群 {self.A}：存好了", out)
+            self.assertIn(f"群 {self.B}：存好了", out)
+
+    def test_save_skips_empty(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("/help", group=self.A, mid=1)))
+        with tempfile.TemporaryDirectory() as d:
+            out = bench_command(s, Path(d), ["save"], group_ids={self.A})
+            self.assertIn("没有记录，没存", out)
+            self.assertEqual(load_saved(Path(d) / "bench" / "recordings"), [])
+
+    def test_group_scopes_match_exact_id(self):
+        s = Store(":memory:")
+        for g in ("555", "1555", "5550"):
+            s.scope(f"llbot:GroupMessage:{g}", "llbot", "group")
+        self.assertEqual(s.group_scopes({"555"}), ["llbot:GroupMessage:555"])
+        self.assertEqual(len(s.group_scopes(None)), 3)
+
+
 class NameAddressTests(unittest.TestCase):
     def test_name_is_likely_not_forced(self):
         d = decide(m("阿灯 你觉得呢"), [], 0)
