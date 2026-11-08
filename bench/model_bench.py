@@ -23,7 +23,7 @@ from ._core import DEFAULT_ALIASES, M2_POLICY, decide_m2, load_params
 from ._core import decide_model as dm
 from .runner import replay, score
 from .situations import Recording
-from .tune import dedupe, evaluate
+from .tune import dedupe, evaluate, objective
 
 CONCURRENCY = 6
 LAST_FILE = "model-last.json"
@@ -61,7 +61,7 @@ async def ask_all(client, system: str, prompts: list[str], concurrency: int = CO
     sem = asyncio.Semaphore(concurrency)
     out: list[str | None] = [None] * len(prompts)
     stats = {"calls": 0, "cached": 0, "failed": 0, "unparsed": 0, "over_budget": 0, "forgotten": 0,
-             "cost": 0.0, "model": None}
+             "cost": 0.0, "model": None, "errors": {}}
     stop = asyncio.Event()
     store = client.budget.store
     if gen is None:
@@ -84,8 +84,10 @@ async def ask_all(client, system: str, prompts: list[str], concurrency: int = CO
                 stop.set()
                 stats["over_budget"] += 1
                 return
-            except Exception:  # noqa: BLE001 - a failed call keeps the rules' decision
+            except Exception as e:  # noqa: BLE001 - a failed call keeps the rules' decision
                 stats["failed"] += 1
+                k = type(e).__name__  # the type only: messages can echo the request
+                stats["errors"][k] = stats["errors"].get(k, 0) + 1
                 return
             stats["calls"] += 1
             stats["cached"] += int(r.cached)
@@ -101,18 +103,44 @@ async def ask_all(client, system: str, prompts: list[str], concurrency: int = CO
     return stats
 
 
-def apply_answers(runs, jobs, answers) -> int:
-    """Swap in the model's action for each answered turn; rescore. Returns how many."""
+def apply_answers(runs, jobs, answers, thresholds=dm.DEFAULT_THRESHOLDS) -> int:
+    """Swap in the model's action for each answered turn (scores -> action at these
+    cuts); rescore. Always starts from the rules' own decisions, so it can be called
+    again with other cuts. Returns how many turns the model settled."""
+    for run in runs:
+        if not hasattr(run, "_rules"):
+            run._rules = [s.decision for s in run.steps]
+            run._implied = run.metrics.get("implied")
+        for s, d in zip(run.steps, run._rules):
+            s.decision = d
     new: dict[int, Any] = {}
     for (d, _, _), a in zip(jobs, answers):
         if a is not None:
-            new[id(d)] = dm.with_model(d, a)
+            new[id(d)] = dm.with_model(d, dm.action_for(a, thresholds) if isinstance(a, tuple) else a)
     for run in runs:
         for s in run.steps:
             if id(s.decision) in new:
                 s.decision = new[id(s.decision)]
-        run.metrics = score(run)
+        run.metrics = score(run, implied=run._implied)
     return len(new)
+
+
+CUTS = range(1, 11)  # 10 = never
+
+
+def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
+    """The (react, reply) cuts that score best on dev labels (tune's objective:
+    balanced accuracy, reply share near your labels' implied rate). Held-out labels
+    are never looked at here. Ties go to the cuts closest to the defaults."""
+    best, best_key, best_ev = dm.DEFAULT_THRESHOLDS, None, None
+    for a in CUTS:
+        for b in CUTS:
+            apply_answers(runs, jobs, answers, (a, b))
+            ev = evaluate(runs)
+            key = (objective(ev), -abs(a - 5) - abs(b - 5))
+            if best_key is None or key > best_key:
+                best, best_key, best_ev = (a, b), key, ev
+    return best, best_ev
 
 
 def _capped(runs):
@@ -151,31 +179,41 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
         # also a forget that landed while the last calls were in flight (PR #28 review)
         return (f"运行中有人被遗忘（/reg forget），剩下的 {stats['forgotten']} 条没有发给模型，这次结果作废。"
                 "需要的话重新运行 /reg bench model。")
-    n = apply_answers(runs, jobs, stats.pop("answers"))
-    model = evaluate(runs)
+    answers = stats.pop("answers")
+    n = apply_answers(runs, jobs, answers)
+    model = evaluate(runs)  # at the default cuts
+    cuts, fitted = fit(runs, jobs, answers)
+    hist = {k: [sum(1 for a in answers if a is not None and a[i] == v) for v in range(10)]
+            for i, k in enumerate(("react", "reply"))}
     res = {"when": time.strftime("%Y-%m-%d %H:%M"), "version": dm.VERSION, "uncertain": total,
            "asked": len(jobs), "answered": n, **{k: v for k, v in stats.items()},
-           "rules": rules, "with_model": model}
+           "rules": rules, "with_model": model, "cuts": list(cuts), "fitted": fitted,
+           "score_counts": hist}
     (data_dir / "bench").mkdir(parents=True, exist_ok=True)
     (data_dir / "bench" / LAST_FILE).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    rd, md, rh, mh = rules["dev"], model["dev"], rules["held_out"], model["held_out"]
     rec = lambda e: " / ".join(_pct(e["recall"][k]) for k in ("quiet", "react", "reply"))  # noqa: E731
+    errs = "、".join(f"{k} {v}" for k, v in stats["errors"].items())
     lines = [
         f"规则 + 模型（{stats['model'] or '?'}，{time.time() - t0:.0f} 秒）",
         *([f"有 {sum(1 for d in _capped(runs))} 条模型想回复，但超过了发言占比上限，改成表情"] if any(_capped(runs)) else []),
-        f"规则拿不准的已标注时刻 {total} 条，问了 {len(jobs)} 条，得到答案 {n} 条"
-        f"（缓存 {stats['cached']}，失败 {stats['failed']}，答非所问 {stats['unparsed']}"
+        f"规则拿不准的已标注时刻 {total} 条，问了 {len(jobs)} 条，得到分数 {n} 条"
+        f"（缓存 {stats['cached']}，失败 {stats['failed']}{f'：{errs}' if errs else ''}，答非所问 {stats['unparsed']}"
         + (f"，超预算没问 {stats['over_budget']}" if stats["over_budget"] else "") + f"），花费约 {stats['cost']:.4f}",
-        f"调参用 {md['labeled']} 条 平衡准确率：只用规则 {_pct(rd['balanced_accuracy'])} → 加模型 {_pct(md['balanced_accuracy'])}"
-        f"（不说/表情/回复 召回 {rec(rd)} → {rec(md)}）",
+        "模型给的分（0-9 各多少条）：表情 " + " ".join(map(str, hist["react"])) + "；回复 " + " ".join(map(str, hist["reply"])),
+        "平衡准确率（不说/表情/回复 召回）：",
     ]
-    if mh["labeled"]:
-        lines.append(f"留出的 {mh['labeled']} 条：{_pct(rh['balanced_accuracy'])} → {_pct(mh['balanced_accuracy'])}"
-                     f"（召回 {rec(rh)} → {rec(mh)}）")
-    lines.append(f"回复占比 {_pct(rules['reply_share'])} → {_pct(model['reply_share'])}"
-                 f"（按标注推算约 {_pct(model['target_reply_share'])}）")
+    for name, key in (("调参用", "dev"), ("留出", "held_out")):
+        r, m, f = rules[key], model[key], fitted[key]
+        if not r["labeled"]:
+            continue
+        lines.append(f"  {name} {r['labeled']} 条：只用规则 {_pct(r['balanced_accuracy'])}（{rec(r)}）· "
+                     f"模型默认分界 {_pct(m['balanced_accuracy'])}（{rec(m)}）· "
+                     f"按调参标注定分界 {_pct(f['balanced_accuracy'])}（{rec(f)}）")
+    lines.append(f"分界：表情 ≥{cuts[0]}，回复 ≥{cuts[1]}（10 = 从不；只用调参那部分标注定，留出的没参与）")
+    lines.append(f"回复占比 规则 {_pct(rules['reply_share'])} · 默认 {_pct(model['reply_share'])} · "
+                 f"定分界后 {_pct(fitted['reply_share'])}（按标注推算约 {_pct(fitted['target_reply_share'])}）")
     if limit and total > len(jobs):
         lines.append(f"只问了前 {len(jobs)} 条；不加数字的 /reg bench model 会问全部（已问过的走缓存，不再花钱）。")
-    lines.append("模型没有用你的标注调过，调参/留出两边都是公平的测试。只影响 bench，影子决策还是规则。")
+    lines.append("模型本身没用你的标注调过；分界只用调参那部分标注定，所以留出那行是公平的测试。只影响 bench，影子决策还是规则。")
     return "\n".join(lines)
