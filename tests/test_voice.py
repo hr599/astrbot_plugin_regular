@@ -4,6 +4,7 @@ import random
 import unittest
 
 from core.voice import (
+    cn_int,
     check, command_like, delays, has_canary, leaked, load_rules, made_up_specifics, normalize,
     split_parts, tells,
 )
@@ -96,6 +97,40 @@ class SpecificsTests(unittest.TestCase):
     def test_specifics_from_context_are_fine(self):
         ctx = "老周: 讲座是周二 下午3点"
         self.assertEqual(made_up_specifics("周二下午3点 我记下了", ctx), [])
+
+    def test_decimal_prefix_is_not_the_number(self):
+        # PR #9 review: "12" isn't backed by "12.5"
+        self.assertEqual(check("票价￥12", context="票价￥12.5", rules={}).verdict, "rewrite")
+        self.assertEqual(check("温度是12度", context="温度是12.5度", rules={}).verdict, "rewrite")
+        self.assertEqual(check("票价￥12.5", context="票价￥12.5", rules={}).verdict, "send")
+
+    def test_weekday_next_to_time(self):
+        # PR #9 review: two typed tokens, not one number; spacing in context doesn't matter
+        self.assertEqual(check("星期二12点见", context="星期二12点见", rules={}).verdict, "send")
+        self.assertEqual(check("周二 12点见", context="周二 12点见", rules={}).verdict, "send")
+        self.assertEqual(check("周二12点见", context="周三12点见", rules={}).verdict, "rewrite")
+
+    def test_chinese_numerals(self):
+        # PR #9 review: 五十块 / 下午三点 get the same check as 50块 / 3点
+        hits = {h.kind for h in made_up_specifics("门票五十块，下午三点见", "")}
+        self.assertEqual(hits, {"specific_price", "specific_time"})
+        self.assertEqual(made_up_specifics("门票五十块，下午三点见", "门票50块 下午3点"), [])
+        self.assertEqual(made_up_specifics("门票50块，三点半见", "门票五十块 3点半"), [])
+        self.assertEqual(len(made_up_specifics("门票四十块，下午四点见", "门票50块 下午3点")), 2)
+        self.assertEqual(cn_int("一百五"), 150)
+        self.assertEqual(cn_int("一百零五"), 105)
+        self.assertEqual(cn_int("两千五"), 2500)
+        # everyday words that look like numbers aren't specifics
+        self.assertEqual(made_up_specifics("好一点了 差一点 我们一块去吧 有两点建议", ""), [])
+
+    def test_runs_of_punctuation_stay_attached(self):
+        # PR #9 review: a lone "！" part was dropped by the command check
+        for t in ("太好了！！", "什么？！", "真的吗？？"):
+            self.assertEqual(split_parts(t), [t])
+            self.assertEqual(check(t, rules={}).verdict, "send")
+        self.assertEqual(split_parts("好的！！明天见"), ["好的！！", "明天见"])
+        # a split that really produces a command is still blocked
+        self.assertEqual(check("好的！/help", rules={}).verdict, "drop")
 
     def test_altered_number_is_not_supported_by_a_longer_one(self):
         # Codex P2 on #9: "50块" sits inside "150块" but is a different price

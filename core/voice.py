@@ -102,57 +102,134 @@ def tells(text: str, rules: dict[str, Any], *, sincere_ai: bool = False,
 
 
 # ---------------------------------------------------------------- made-up specifics
-_CN_NUM = "零一二两三四五六七八九十百千万"
+# Each specific is extracted as a whole, typed token and reduced to a canonical
+# value, so comparison is token against token (PR #9 review): "12" isn't backed by
+# "12.5", "50块" isn't backed by "150块", "五十块" is backed by "50块", and a weekday
+# next to a time ("星期二12点") is two tokens, not one number.
+_CN_DIG = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000}
+_CN = "零〇一二两三四五六七八九十百千万"
+_DAYPART = "凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|今晚|明早|明晚|夜里|半夜"
+_N = r"(?<![\d.])"  # start at the beginning of a number, never inside one
+
 _SPECIFICS = [
-    ("date", re.compile(rf"(\d+|[{_CN_NUM}]+)月(\d+|[{_CN_NUM}]+)?[日号]?")),
-    ("date", re.compile(rf"(\d+|[{_CN_NUM}]+)[日号]")),
+    ("date", re.compile(rf"{_N}(\d{{1,2}}|[{_CN}]{{1,3}})月((\d{{1,2}}|[{_CN}]{{1,3}})[日号])?")),
+    ("date", re.compile(rf"{_N}(?<![{_CN}])(\d{{1,2}}|[{_CN}]{{1,3}})[日号](?![码线楼床])")),
     ("weekday", re.compile(r"(周|星期|礼拜)[一二三四五六日天]")),
-    ("time", re.compile(r"\d{1,2}[:：]\d{2}|\d{1,2}点(半|\d{1,2}分?)?")),
-    ("price", re.compile(r"[¥￥$]\s?\d+(\.\d+)?|\d+(\.\d+)?\s?(块|元|毛|美元|刀)")),
-    ("number", re.compile(r"\d+(\.\d+)?%|\d{2,}(\.\d+)?")),
+    ("time", re.compile(rf"{_N}\d{{1,2}}[:：]\d{{2}}|{_N}\d{{1,2}}点(半|\d{{1,2}}分?|[{_CN}]{{1,3}}分)?")),
+    # Chinese-numeral times: validated in _cn_time_ok ("好一点"/"差一点" aren't times)
+    ("cn_time", re.compile(rf"({_DAYPART})?(?<![{_CN}])([{_CN}]{{1,3}})点(半|钟|[{_CN}]{{1,3}}分)?")),
+    ("price", re.compile(rf"[¥￥$]\s?\d+(\.\d+)?|{_N}\d+(\.\d+)?\s?(块|元|毛|美元|刀)")),
+    # Chinese-numeral prices: "一块" alone is usually 一块儿 (together), so it needs 钱
+    ("cn_price", re.compile(rf"(?<![{_CN}])([{_CN}]{{1,6}})(块|元|毛)(钱)?")),
+    ("number", re.compile(rf"{_N}(\d+(\.\d+)?%|\d{{2,}}(\.\d+)?)")),
 ]
 _QUOTE = re.compile(r"[「“\"]([^」”\"]{4,})[」”\"]")
 
 
-_NUMCH = rf"\d.{_CN_NUM}"
+def cn_int(s: str) -> int | None:
+    """Chinese numerals as people write them: 十二, 二十, 一百零五, 一百五 (=150), 两千五."""
+    total = section = num = 0
+    last_unit, prev_unit = 1, False
+    for ch in s:
+        if ch in _CN_DIG:
+            num, prev_unit = _CN_DIG[ch], False
+        elif ch in _CN_UNIT:
+            u = _CN_UNIT[ch]
+            section += (num or (1 if u == 10 else 0)) * u
+            num, last_unit, prev_unit = 0, u, True
+        elif ch == "万":
+            total += (section + num) * 10000
+            section = num = 0
+            last_unit, prev_unit = 10000, True
+        else:
+            return None
+    if num:
+        # 一百五 / 两千五: a lone digit right after a unit is one place lower
+        section += num * (last_unit // 10) if prev_unit is False and s[-2:-1] in "百千万" and last_unit >= 100 else num
+    return total + section
 
 
-def _in_context(tok: str, ctx: str) -> bool:
-    """tok appears in ctx as a whole number: "50块" is not supported by "150块",
-    nor "12" by "120". Boundaries only apply where tok starts/ends with a numeral."""
-    pre = rf"(?<![{_NUMCH}])" if re.match(rf"[{_NUMCH}]", tok) else ""
-    post = rf"(?![\d{_CN_NUM}])" if re.search(rf"[{_NUMCH}]$", tok) else ""
-    return re.search(pre + re.escape(tok) + post, ctx) is not None
+def _arabic(tok: str) -> str:
+    return re.sub(rf"[{_CN}]+", lambda m: str(cn_int(m.group(0))), tok)
+
+
+def _cn_time_ok(m: re.Match, text: str) -> bool:
+    if m.group(1) or m.group(3):  # 下午三点 / 三点半 / 三点钟 / 三点十分
+        return True
+    num, after = m.group(2), text[m.end():m.end() + 1]
+    if num in ("一", "两", "半"):  # 好一点 / 有两点建议
+        return False
+    return after not in "个建意要理内多儿"
+
+
+def _canon(kind: str, tok: str) -> str:
+    t = re.sub(r"\s+", "", tok).replace("：", ":")
+    if kind == "weekday":
+        return "weekday:" + t[-1].replace("天", "日")
+    if kind == "time":
+        t = _arabic(re.sub(rf"^({_DAYPART})", "", t)).replace("钟", "")
+        m = re.fullmatch(r"(\d+)(?::(\d+)|点(半|(\d+)分?)?)", t)
+        if not m:
+            return "time:" + t
+        h = int(m.group(1))
+        mm = int(m.group(2) or (30 if m.group(3) == "半" else (m.group(4) or 0)))
+        return f"time:{h}:{mm:02d}"
+    if kind == "price":
+        t = _arabic(t.replace("钱", ""))
+        v = re.search(r"\d+(\.\d+)?", t).group(0)
+        return f"price:{float(v):g}{'毛' if t.endswith('毛') else ''}"
+    if kind == "date":
+        t = _arabic(t)
+        mo = re.search(r"(\d+)月", t)
+        d = re.search(r"(\d+)[日号]", t)
+        return f"date:{mo.group(1) if mo else ''}/{d.group(1) if d else ''}"
+    return "number:" + t
+
+
+def _specifics(text: str) -> list[tuple[str, str, str]]:
+    """(kind, surface token, canonical value), one per span; earlier kinds win."""
+    t = re.sub(r"\s+", "", text)
+    out, spans = [], []
+    for kind, pat in _SPECIFICS:
+        for m in pat.finditer(t):
+            if kind == "cn_time" and not _cn_time_ok(m, t):
+                continue
+            if kind == "cn_price" and m.group(1) == "一" and not m.group(3):
+                continue  # 一块 (together) unless 一块钱
+            a, b = m.span()
+            if any(a < y and x < b for x, y in spans):
+                continue  # part of a date/time/price already taken
+            spans.append((a, b))
+            k = kind.removeprefix("cn_")
+            out.append((k, m.group(0), _canon(k, m.group(0))))
+    return out
 
 
 def made_up_specifics(text: str, context: str) -> list[Hit]:
     """Exact numbers, dates, times, prices and quotes that appear in neither the
     context (thread + injected memory) nor elsewhere in what it was given.
     These get softened to a hedge or dropped, never sent as fact."""
-    t, ctx = normalize(text), re.sub(r"\s+", "", normalize(context))
+    t, ctx = normalize(text), normalize(context)
+    known = {c for _, _, c in _specifics(ctx)}
     out, seen = [], set()
-    for kind, pat in _SPECIFICS:
-        for m in pat.finditer(t):
-            tok = re.sub(r"\s+", "", m.group(0))
-            if tok in seen:
-                continue
-            seen.add(tok)
-            if not _in_context(tok, ctx):
-                out.append(Hit(f"specific_{kind}", tok))
+    for kind, tok, canon in _specifics(t):
+        if canon in seen:
+            continue
+        seen.add(canon)
+        if canon not in known:
+            out.append(Hit(f"specific_{kind}", tok))
+    flat = re.sub(r"\s+", "", ctx)
     for m in _QUOTE.finditer(t):
-        if re.sub(r"\s+", "", m.group(1)) not in ctx:
+        if re.sub(r"\s+", "", m.group(1)) not in flat:
             out.append(Hit("specific_quote", m.group(1)[:20]))
-    # a date or price token also matches "number"; keep one hit per span
-    uniq, spans = [], []
-    for h in out:
-        if not any(h.detail in s or s in h.detail for s in spans):
-            uniq.append(h)
-            spans.append(h.detail)
-    return uniq
+    return out
 
 
 # ---------------------------------------------------------------- shaping
-_BREAK = re.compile(r"(?<=[。！？!?~～…])\s*")
+# break after a run of sentence-ending marks, never inside one: "太好了！！" and
+# "什么？！" stay whole (a lone "！" part would also trip the command check)
+_BREAK = re.compile(r"(?<=[。！？!?~～…])(?![。！？!?~～…])\s*")
 
 
 def split_parts(text: str, max_parts: int = 3) -> list[str]:
