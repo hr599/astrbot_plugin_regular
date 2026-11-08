@@ -1,6 +1,6 @@
 name: astrbot_plugin_regular
 display_name: 群里的老熟人
-desc: A humanlike group regular for one QQ friends group. Watches and logs, decides in shadow; sending is behind an off switch (default off).
+desc: "A humanlike group regular for one QQ friends group. Watches and logs, decides in shadow; sending is behind an off switch (default off)."
 version: v0.2.0
 author: hr599
 repo: https://github.com/hr599/astrbot_plugin_regular
