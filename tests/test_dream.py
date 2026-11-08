@@ -391,6 +391,22 @@ class DreamTest(unittest.TestCase):
             with self.subTest(kind=op.kind):
                 self.assertEqual(self.first_fail(op).check, "computed")
 
+    def test_retire_needs_the_types_authority(self):
+        # PR #11 review, round 5
+        for who, ok in (("bob", False), ("alice", True), ("admin", True)):
+            with self.subTest(who=who):
+                self.setUp()
+                m = self.say("alice", "我不想聊前任")
+                apply([self.add("boundary", "alice不想聊前任", [self.ev(m)])], self.ctx())
+                cid = self.claims()[0]["claim_id"]
+                c = self.say(who, "alice现在聊前任没事了")
+                res = apply([Op("retire", claim_id=cid, contra=[self.ev(c)])], self.ctx())
+                st = self.claims()[0]["status"]
+                self.assertEqual(st, "retired" if ok else "validated")
+                if not ok:
+                    self.assertTrue(res["rejected"][0][2].startswith("corroborate: retire"))
+                self.tearDown()
+
     # ---------------------------------------------------------------- apply / revert
     def claims(self):
         return [dict(r) for r in self.store.db.execute(

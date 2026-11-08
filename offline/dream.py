@@ -255,7 +255,17 @@ def check_corroboration(op: Op, ctx: Ctx):
         v = corroboration(op.type, op.subject, op.object, op.evidence, ctx)
         if v is not None:
             return Verdict(v.check, "revise: " + v.reason)
+    if op.kind == "retire" and op.type in _PERSON_RULED:
+        # retiring a fact about a person takes the same authority as stating it: the
+        # person, an admin (boundary), or 2+ speakers (PR #11 review: Bob alone could
+        # retire Alice's boundary). Jokes, plans and reflections just need contra.
+        v = corroboration(op.type, op.subject, op.object, op.contra, ctx)
+        if v is not None:
+            return Verdict(v.check, "retire: " + v.reason)
     return None
+
+
+_PERSON_RULED = {"boundary", "identity", "self_disclosure", "relation"}
 
 
 def check_reinforce(op: Op, ctx: Ctx):
