@@ -43,6 +43,8 @@ GRID: dict[str, list[float]] = {
     "addressed.name": [0.4, 0.5, 0.6, 0.7, 0.8],
     "addressed.about": [0.1, 0.3, 0.5],
     "share_cap": [0.1, 0.15, 0.2, 0.3],
+    "heat_quiet": [0.5, 0.7, 0.9],
+    "rhythm.class": [0.6, 0.8, 1.0],
 }
 
 
@@ -81,6 +83,7 @@ def evaluate(runs: list[Run]) -> dict[str, Any]:
     """Pooled across recordings: dev and held-out per-class counts, reply share."""
     def pool(key: str) -> dict[str, Any]:
         conf = {a: {b: 0 for b in ("quiet", "react", "reply")} for a in ("quiet", "react", "reply")}
+        by: dict[str, dict[str, int]] = {}
         n = 0
         for r in runs:
             src = r.metrics if key == "dev" else (r.metrics.get("held_out") or {})
@@ -88,10 +91,14 @@ def evaluate(runs: list[Run]) -> dict[str, Any]:
                 for b, c in row.items():
                     conf[a][b] += c
                     n += c
+            for a, row in (src.get("decided_by") or {}).items():
+                for rule, c in row.items():
+                    by.setdefault(a, {})[rule] = by.get(a, {}).get(rule, 0) + c
         rec = [conf[a][a] / sum(conf[a].values()) for a in conf if sum(conf[a].values())]
         agree = sum(conf[a][a] for a in conf)
         return {"labeled": n, "balanced_accuracy": round(sum(rec) / len(rec), 3) if rec else None,
                 "action_agreement": round(agree / n, 3) if n else None,
+                "decided_by": by,
                 "recall": {a: (round(conf[a][a] / sum(conf[a].values()), 3) if sum(conf[a].values()) else None)
                            for a in conf}}
     people = sum(r.metrics["moments"] for r in runs)
@@ -220,6 +227,11 @@ def tune_command(recs: list[Recording], data_dir: Path, args: list[str], *,
                      f"{_pct(a['held_out']['balanced_accuracy'])}")
         if (a["held_out"]["balanced_accuracy"] or 0) < (b["held_out"]["balanced_accuracy"] or 0):
             lines.append("⚠ 留出集变差了：多半是过拟合，建议先别应用，多标一些再调。")
+    for should, name in (("reply", "你标了回复"), ("react", "你标了表情")):
+        by = a["dev"].get("decided_by", {}).get(should) or {}
+        if by:
+            top = sorted(by.items(), key=lambda kv: -kv[1])[:5]
+            lines.append(f"{name}的 {sum(by.values())} 条，由哪条规则决定：" + "，".join(f"{r} {c}" for r, c in top))
     lines.append(f"回复占比 {_pct(b['reply_share'])} → {_pct(a['reply_share'])}（按标注推算约 {_pct(a['target_reply_share'])}）")
     if res["changed"]:
         lines.append("改动：" + "，".join(f"{k} {o}→{n}" for k, (o, n) in res["changed"].items()))

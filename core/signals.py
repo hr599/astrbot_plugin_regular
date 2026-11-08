@@ -124,14 +124,19 @@ def decay(value: float, dt: float, half_life: float = HEAT_HALF_LIFE) -> float:
     return value * math.pow(0.5, max(0.0, dt) / half_life)
 
 
+BACK_AND_FORTH_FLOOR = 0.1  # back-and-forth counts once a cue has started some heat
+
+
 def heat_step(prev: float, dt: float, *, back_and_forth: bool, insult: bool, heat_cue: bool) -> float:
-    """Heat rises with fast back-and-forth between the same two people, insults, or
-    someone saying 别吵了; it decays with a 5-minute half-life. Bounded 0..1."""
+    """Heat starts with an insult or a heat cue (别吵了, 明明是你…); fast back-and-forth
+    between the same two people only adds to heat that's already there. On its own,
+    two friends trading quick messages is just chatting (live labels, Nov 9: it read
+    ordinary chat as an argument). Decays with a 5-minute half-life. Bounded 0..1."""
     h = decay(prev, dt)
-    if back_and_forth:
-        h += 0.12
     if insult:
         h += 0.2
     if heat_cue:
         h += 0.15
+    if back_and_forth and h >= BACK_AND_FORTH_FLOOR:
+        h += 0.12
     return min(1.0, h)
