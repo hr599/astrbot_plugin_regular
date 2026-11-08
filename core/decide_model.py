@@ -92,15 +92,21 @@ def system_prompt(persona_prompt: str) -> str:
 
 
 def parse(text: str) -> str | None:
-    """The model's answer -> quiet | react | reply, or None if it isn't one."""
-    t = (text or "").strip().lower()
+    """The model's answer -> quiet | react | reply, or None. The whole answer must be
+    the action (trailing punctuation and quotes allowed), or a complete JSON object
+    whose action is exactly one; prose that merely contains a word ("I cannot reply
+    to this", {"action": "do not reply"}) is not an answer (PR #28 review)."""
+    t = (text or "").strip()
     if t.startswith("{"):
         try:
-            t = str(json.loads(t).get("action", "")).lower()
-        except (ValueError, AttributeError):
-            pass
-    found = [a for a in ACTIONS if re.search(rf"\b{a}\b", t)]
-    return found[0] if len(found) == 1 else None
+            obj = json.loads(t)
+        except ValueError:
+            return None
+        a = obj.get("action") if isinstance(obj, dict) else None
+        a = a.strip().lower() if isinstance(a, str) else None
+        return a if a in ACTIONS else None
+    t = re.sub(r"^[\s\"'`“‘「]+|[\s\"'`”’」.。!！]+$", "", t).lower()
+    return t if t in ACTIONS else None
 
 
 def is_soft(d: Decision) -> bool:
@@ -108,7 +114,13 @@ def is_soft(d: Decision) -> bool:
 
 
 def with_model(d: Decision, action: str) -> Decision:
-    """The rules' decision, with the model's action and the trail kept."""
-    return Decision(action, d.addressed, d.address_kind,
-                    {**d.reasons, "rule": "model", "rules_said": d.action, "rules_rule": d.reasons.get("rule")},
+    """The rules' decision, with the model's action and the trail kept. The model
+    chooses only among what the rules still allowed here: over the share cap a
+    reply becomes a reaction (PR #28 review)."""
+    allowed = d.reasons.get("allowed") or list(ACTIONS)
+    capped = action not in allowed
+    final = action if not capped else ("react" if "react" in allowed else d.action)
+    return Decision(final, d.addressed, d.address_kind,
+                    {**d.reasons, "rule": "model", "model_said": action, "capped": capped,
+                     "rules_said": d.action, "rules_rule": d.reasons.get("rule")},
                     VERSION)

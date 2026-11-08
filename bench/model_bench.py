@@ -54,15 +54,26 @@ def collect(recs: list[Recording], params: dict[str, Any], aliases) -> tuple[lis
     return runs, jobs
 
 
-async def ask_all(client, system: str, prompts: list[str], concurrency: int = CONCURRENCY) -> dict[str, Any]:
+async def ask_all(client, system: str, prompts: list[str], concurrency: int = CONCURRENCY,
+                  gen: int | None = None) -> dict[str, Any]:
+    """gen: the store's forget generation when the prompts were built (default: now)."""
     from ._core import BudgetExceeded
     sem = asyncio.Semaphore(concurrency)
     out: list[str | None] = [None] * len(prompts)
-    stats = {"calls": 0, "cached": 0, "failed": 0, "unparsed": 0, "over_budget": 0, "cost": 0.0, "model": None}
+    stats = {"calls": 0, "cached": 0, "failed": 0, "unparsed": 0, "over_budget": 0, "forgotten": 0,
+             "cost": 0.0, "model": None}
     stop = asyncio.Event()
+    store = client.budget.store
+    if gen is None:
+        gen = getattr(store, "cache_gen", 0)  # the data these prompts were built from
 
     async def one(i: int, p: str) -> None:
         async with sem:
+            if getattr(store, "cache_gen", 0) != gen:
+                # someone was forgotten since the batch was built: none of the queued
+                # prompts may go out (PR #28 review); a fresh run reloads clean data
+                stats["forgotten"] += 1
+                return
             if stop.is_set():
                 stats["over_budget"] += 1
                 return
@@ -104,6 +115,15 @@ def apply_answers(runs, jobs, answers) -> int:
     return len(new)
 
 
+def _capped(runs):
+    seen = set()
+    for r in runs:
+        for s in r.steps:
+            if s.decision.reasons.get("capped") and id(s.decision) not in seen and s.label is not None:
+                seen.add(id(s.decision))
+                yield s.decision
+
+
 def _pct(v) -> str:
     return "n/a" if v is None else f"{v:.0%}"
 
@@ -117,6 +137,7 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
     except LookupError as e:
         return str(e)
     t0 = time.time()
+    gen = getattr(client.budget.store, "cache_gen", 0)  # before reading any chat
     recs = dedupe([r for r in recs if r.source != "fixture" and r.messages])
     runs, jobs = collect(recs, load_params(data_dir), aliases)
     rules = evaluate(runs)
@@ -125,7 +146,10 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
     total = len(jobs)
     if limit:
         jobs = jobs[:limit]
-    stats = await ask_all(client, dm.system_prompt(persona_prompt), [p for _, p, _ in jobs])
+    stats = await ask_all(client, dm.system_prompt(persona_prompt), [p for _, p, _ in jobs], gen=gen)
+    if stats["forgotten"]:
+        return (f"运行中有人被遗忘（/reg forget），剩下的 {stats['forgotten']} 条没有发给模型，这次结果作废。"
+                "需要的话重新运行 /reg bench model。")
     n = apply_answers(runs, jobs, stats.pop("answers"))
     model = evaluate(runs)
     res = {"when": time.strftime("%Y-%m-%d %H:%M"), "version": dm.VERSION, "uncertain": total,
@@ -138,6 +162,7 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
     rec = lambda e: " / ".join(_pct(e["recall"][k]) for k in ("quiet", "react", "reply"))  # noqa: E731
     lines = [
         f"规则 + 模型（{stats['model'] or '?'}，{time.time() - t0:.0f} 秒）",
+        *([f"有 {sum(1 for d in _capped(runs))} 条模型想回复，但超过了发言占比上限，改成表情"] if any(_capped(runs)) else []),
         f"规则拿不准的已标注时刻 {total} 条，问了 {len(jobs)} 条，得到答案 {n} 条"
         f"（缓存 {stats['cached']}，失败 {stats['failed']}，答非所问 {stats['unparsed']}"
         + (f"，超预算没问 {stats['over_budget']}" if stats["over_budget"] else "") + f"），花费约 {stats['cost']:.4f}",

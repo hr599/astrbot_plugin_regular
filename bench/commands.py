@@ -116,16 +116,17 @@ def bench_command(store, data_dir: Path, args: list[str], *,
 def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     """Numbers only, for the redacted /reg debug bundle: no text, no ids."""
     runs = sorted((data_dir / "bench" / "runs").glob("bench-*.json"))
+    model_last = data_dir / "bench" / "model-last.json"
+    model = json.loads(model_last.read_text(encoding="utf-8")) if model_last.exists() else None
     if not runs:
-        return None
+        return {"model": model} if model else None  # a /reg bench model run alone still shows up
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
             "action_agreement", "balanced_accuracy", "decided_by", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
-    model_last = data_dir / "bench" / "model-last.json"
     return {
-        "model": json.loads(model_last.read_text(encoding="utf-8")) if model_last.exists() else None,
+        "model": model,
         "file": runs[-1].name,
         "totals": d["totals"],
         "runs": [{"source": r["source"],

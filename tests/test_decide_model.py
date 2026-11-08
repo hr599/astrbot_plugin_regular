@@ -42,7 +42,11 @@ class PromptTests(unittest.TestCase):
 
     def test_parse(self):
         for text, want in (("quiet", "quiet"), (" React\n", "react"), ('{"action": "reply"}', "reply"),
-                           ("reply.", "reply"), ("quiet or reply", None), ("好的", None), ("", None)):
+                           ("reply.", "reply"), ('"quiet"', "quiet"), ("quiet or reply", None), ("好的", None),
+                           ("", None),
+                           # PR #28 review: a word inside prose or a bad JSON action isn't an answer
+                           ("I cannot reply to this.", None), ('{"action":"do not reply"}', None),
+                           ('{"action":"reply"', None), ('{"action": 1}', None), ("reply because it's funny", None)):
             with self.subTest(text=text):
                 self.assertEqual(dm.parse(text), want)
 
@@ -127,6 +131,74 @@ class ModelBenchTests(unittest.TestCase):
             self.assertIsInstance(r, AsyncReply)
             self.assertIn("没接上", asyncio.run(r.make()))
             st.close()
+
+
+class Review28Tests(unittest.TestCase):
+    def test_model_cant_lift_the_share_cap(self):
+        from bench.model_bench import apply_answers
+        h = ([Msg(f"b{i}", E + i, "bot", "嗯", is_bot=True) for i in range(3)]
+             + [Msg(f"h{i}", E + 10 + i * 30, "ABC"[i], "今天好热") for i in range(3)])
+        targets = [Msg("t1", E + 200, "D", "哈哈哈"), Msg("t2", E + 300, "E", "到了")]
+        rec = Recording("cap", "saved", h + targets, {"t1": {"addressed": False, "should": "react"},
+                                                      "t2": {"addressed": False, "should": "quiet"}})
+        runs, jobs = collect([rec], load_params(), ("阿灯",))
+        self.assertEqual(len(jobs), 2)
+        apply_answers(runs, jobs, ["reply", "reply"])
+        for s in runs[0].steps[-2:]:
+            with self.subTest(msg=s.msg.msg_id):
+                self.assertEqual(s.decision.action, "react")
+                self.assertTrue(s.decision.reasons["capped"])
+                self.assertEqual(s.decision.reasons["model_said"], "reply")
+
+    def test_forget_during_a_batch_stops_the_queued_prompts(self):
+        from bench.model_bench import ask_all
+        d = tempfile.mkdtemp()
+        c, store, n = fake_client(lambda p: "quiet", Path(d))
+        gate = asyncio.Event()
+        real = c.call
+
+        async def slow(pid, system, prompt, params):
+            await gate.wait()
+            return await real(pid, system, prompt, params)
+        c.call = slow
+
+        async def go():
+            task = asyncio.create_task(ask_all(c, "quiet react reply", [f"<chat>{i}</chat>" for i in range(12)],
+                                               concurrency=6))
+            await asyncio.sleep(0.01)  # the first 6 are in flight
+            store.cache_gen += 1        # what forget_person does
+            gate.set()
+            return await task
+        stats = asyncio.run(go())
+        self.assertEqual(n["calls"], 6)          # only the ones already in flight
+        self.assertEqual(stats["forgotten"], 6)
+        self.assertEqual(store.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 0)
+
+    def test_bench_reports_a_forget_and_discards_the_run(self):
+        import bench.model_bench as mb
+        d = Path(tempfile.mkdtemp())
+        c, store, _ = fake_client(lambda p: "quiet", d)
+        real = mb.ask_all
+
+        async def forgetful(client, system, prompts, concurrency=6, gen=None):
+            store.cache_gen += 1  # a forget lands after the prompts were built
+            return await real(client, system, prompts, concurrency, gen=gen)
+        mb.ask_all = forgetful
+        try:
+            out = asyncio.run(model_bench(real_like(), d, client=c, persona_prompt="你是阿灯。"))
+        finally:
+            mb.ask_all = real
+        self.assertIn("作废", out)
+        self.assertFalse((d / "bench" / "model-last.json").exists())
+
+    def test_debug_summary_has_a_model_run_alone(self):
+        from bench.commands import latest_summary
+        d = Path(tempfile.mkdtemp())
+        c, *_ = fake_client(lambda p: "quiet", d)
+        asyncio.run(model_bench(real_like(), d, client=c, persona_prompt="你是阿灯。"))
+        summ = latest_summary(d)
+        self.assertIsNotNone(summ)
+        self.assertIn("with_model", summ["model"])
 
 
 if __name__ == "__main__":
