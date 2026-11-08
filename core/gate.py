@@ -26,6 +26,7 @@ class GateConfig:
     group_ids: set[str] = field(default_factory=set)  # empty = watch nothing
     opted_out_uids: set[str] = field(default_factory=set)
     paused_groups: set[str] = field(default_factory=set)
+    bot_uids: set[str] = field(default_factory=set)  # other bots in the group (config other_bot_ids)
 
 
 @dataclass

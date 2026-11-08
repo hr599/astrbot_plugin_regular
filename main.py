@@ -53,6 +53,7 @@ class Regular(Star):
         self.gate_cfg = GateConfig(
             group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()},
             paused_groups={str(g).strip() for g in config.get("paused_group_ids", []) if str(g).strip()},
+            bot_uids={str(b).strip() for b in config.get("other_bot_ids", []) if str(b).strip()},
         )
         self.aliases = tuple(
             str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
@@ -62,7 +63,8 @@ class Regular(Star):
             labeler=Labeler(self.store, aliases=self.aliases,
                             scopes=lambda: self.store.group_scopes(self.gate_cfg.group_ids)),
             bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases,
-                                             group_ids=self.gate_cfg.group_ids),
+                                             group_ids=self.gate_cfg.group_ids,
+                                             bot_uids=self.gate_cfg.bot_uids),
             people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
                                save_paused=self._save_paused, forget_files=self._forget_files),
         )

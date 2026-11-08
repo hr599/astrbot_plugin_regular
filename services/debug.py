@@ -19,7 +19,7 @@ from typing import Any
 ID_KEYS = {
     "user_id", "group_id", "self_id", "target_id", "operator_id", "sender_id",
     "qq", "uin", "id", "message_id", "message_seq", "real_id", "real_seq", "peer_id",
-    "msg_id",
+    "msg_id", "actor", "answers",
 }
 # Allowlist: only these keys keep their values as-is. They describe the event's
 # *shape* (types, flags, timings) or are our own trace fields. Everything else
@@ -34,7 +34,9 @@ SAFE_KEYS = {
     "at", "action", "gate", "notice", "stored", "mentions_bot", "replied_to",
     "command_like", "injection_flags", "media", "m0", "mode", "shadow", "would", "addressed",
     "address_kind", "signals", "policy", "recalled_found",
-    "poked_bot", "reply_found", "reply_to_bot", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
+    "poked_bot", "reply_found", "reply_to_bot", "signals", "cues", "salience", "heat",
+    "crisis_joking", "rude_to_bot", "self_disclosure", "correction", "heat_cue", "from_bot",
+    "is_add", "target_found", "emoji_ids", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
 }
 _SALT = "regular-debug"
 
