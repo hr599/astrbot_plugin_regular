@@ -42,6 +42,12 @@ _PLACEHOLDER = {
 }
 
 
+# Image sub types that mean "sticker". 1 = QQ's own sticker flag (OneBot/NapCat docs).
+# 7 = a sticker sent from a keyboard/input-method app; undocumented, identified on the
+# live account (Nov 8). Anything else stays a photo until we see it.
+STICKER_SUBTYPES = {"1", "7"}
+
+
 def _raw_subtype(d: dict) -> str:
     for key in ("sub_type", "subType"):
         v = d.get(key)
@@ -51,7 +57,7 @@ def _raw_subtype(d: dict) -> str:
 
 
 def _is_sticker_image(d: dict) -> bool:
-    """QQ marks a sticker sent as an image with sub type 1.
+    """QQ marks a sticker sent as an image with a sub type in STICKER_SUBTYPES.
 
     The key differs by implementation: OneBot/NapCat use `sub_type`, LLBot 8.3.2
     sends `subType` (found on the live account, Nov 8). When neither is present,
@@ -60,7 +66,7 @@ def _is_sticker_image(d: dict) -> bool:
     for key in ("sub_type", "subType"):
         v = d.get(key)
         if v is not None and str(v).strip() != "":
-            return str(v).strip() == "1"
+            return str(v).strip() in STICKER_SUBTYPES
     return str(d.get("summary") or "").strip() in ("[动画表情]", "[表情]")
 
 

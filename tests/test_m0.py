@@ -96,6 +96,7 @@ class PerceiveTests(unittest.TestCase):
         self.assertEqual(kind({"file": "a", "subType": 1}), ["sticker"])      # LLBot 8.3.2
         self.assertEqual(kind({"file": "a", "subType": "1"}), ["sticker"])
         self.assertEqual(kind({"file": "a", "subType": 0}), ["image"])
+        self.assertEqual(kind({"file": "a", "subType": 7}), ["sticker"])  # keyboard-app sticker
         self.assertEqual(kind({"file": "a", "summary": "[动画表情]"}), ["sticker"])
         self.assertEqual(kind({"file": "a", "subType": 0, "summary": "[动画表情]"}), ["image"])
         self.assertEqual(kind({"file": "a"}), ["image"])
@@ -193,7 +194,7 @@ class PipelineTests(unittest.TestCase):
                 {"type": "image", "data": {}}]
         out = self.p.handle(ev(group_msg(segs)))
         self.assertEqual(out.reasons["image_subtypes"], ["7", "1", ""])
-        self.assertEqual(out.reasons["media"], ["image", "sticker", "image"])
+        self.assertEqual(out.reasons["media"], ["sticker", "sticker", "image"])
 
     def test_opt_outs_any_platform(self):
         pid = self.s.person("llbot", FRIEND, "小王", 1)
