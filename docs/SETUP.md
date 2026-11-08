@@ -168,7 +168,8 @@ else can trigger them. A friend who wants out asks you.
   erases it: their messages (and search index, labels, traces), memory about
   them and evidence quoting them, conversation summaries they were in, the
   relationship record and their names, plus their events in the local raw dumps
-  and their lines in saved bench recordings. It can't be undone. Memory runs that
+  and their lines in saved bench recordings. Bench HTML reports (they show message
+  text) are deleted; `/reg bench` makes a new one. It can't be undone. Memory runs that
   held their words lose their undo snapshot. Add `stop` to also stop recording them.
   `/reg mem forget ...` works the same.
 - `/reg optout <QQ>` / `/reg optin <QQ>`: stop or resume recording someone. Opting

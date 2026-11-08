@@ -6,6 +6,8 @@ import time
 import unittest
 from pathlib import Path
 
+from bench.commands import bench_command
+from bench.report import forget_reports
 from bench.situations import forget_sender, from_store, save
 from core.admin import AdminCommands
 from core.gate import GateConfig
@@ -225,9 +227,12 @@ class ForgetFilesTests(unittest.TestCase):
         self.dumper = RawDumper(d / "raw", enabled=True)
         self.rec_dir = d / "recordings"
 
+        self.runs_dir = d / "runs"
+
         def files(uid, sender):
             n, broken = forget_sender(self.rec_dir, sender) if sender else (0, [])
-            return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken}
+            return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken,
+                    "reports": forget_reports(self.runs_dir)}
 
         self.people = PeopleAdmin(self.s, self.cfg, watched=lambda: self.cfg.group_ids,
                                   save_paused=lambda p: None, forget_files=files)
@@ -274,6 +279,18 @@ class ForgetFilesTests(unittest.TestCase):
         self.assertEqual(self.s.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
         self.assertNotIn("我的话", next(self.rec_dir.glob("*.json")).read_text(encoding="utf-8"))
         self.assertEqual(self.cfg.opted_out_uids, {FRIEND})
+
+    def test_html_reports_with_their_words_are_removed(self):
+        # PR #12 review: the HTML trace viewer embeds message text
+        self.feed(group_msg("独一无二的一句话", uid=FRIEND, mid=1, ts=self.t))
+        bench_command(self.s, Path(self.tmp.name), [])
+        html = list((Path(self.tmp.name) / "bench" / "runs").glob("bench-*.html"))
+        self.assertTrue(html and "独一无二的一句话" in html[0].read_text(encoding="utf-8"))
+        self.runs_dir = Path(self.tmp.name) / "bench" / "runs"
+        out = self.reg(f"/reg forget {FRIEND} confirm")
+        self.assertIn("网页报告", out)
+        self.assertEqual(list(self.runs_dir.glob("bench-*.html")), [])
+        self.assertTrue(list(self.runs_dir.glob("bench-*.json")))  # numbers-only summary stays
 
     def test_file_error_is_reported_not_raised(self):
         self.feed(group_msg("我的话", uid=FRIEND, mid=1, ts=self.t))

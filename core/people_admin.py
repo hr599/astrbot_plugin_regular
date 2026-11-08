@@ -93,6 +93,8 @@ class PeopleAdmin:
             lines.append(f"{res['dream_runs_frozen']} 次记忆整理的快照一并清掉了（这几次不能再撤销）。")
         if raw or files.get("recordings"):
             lines.append(f"本地文件：原始事件 {raw} 条、bench 存档 {files.get('recordings', 0)} 条。")
+        if files.get("reports"):
+            lines.append(f"旧的 bench 网页报告（含原文）删了 {files['reports']} 份，需要的话 /reg bench 重新生成。")
         lines.append("以后不再记录他。" if res["opted_out"] else "以后他说话还会照常记录（不想的话：/reg optout " + uid + "）。")
         lines.append("已经生成过的调试包是脱敏的（ID 哈希、文字打码），不受影响；需要的话自己删 debug 文件夹。")
         return "\n".join(lines)

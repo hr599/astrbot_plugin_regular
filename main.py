@@ -18,6 +18,7 @@ from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.outbound import reply_admin_dm
 from .bench.commands import bench_command, latest_summary
+from .bench.report import forget_reports
 from .bench.situations import forget_sender
 from .core.admin import AdminCommands
 from .core.decide import DEFAULT_ALIASES
@@ -160,7 +161,8 @@ class Regular(Star):
 
     def _forget_files(self, uid: str, sender: str | None) -> dict:
         n, broken = (forget_sender(self.data_dir / "bench" / "recordings", sender) if sender else (0, []))
-        return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken}
+        return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken,
+                "reports": forget_reports(self.data_dir / "bench" / "runs")}
 
     def _retention_days(self) -> int:
         return max(1, int(self.config.get("transcript_retention_days", 30) or 30))
