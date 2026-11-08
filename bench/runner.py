@@ -116,7 +116,7 @@ def _ratio(a: int, b: int) -> float | None:
     return round(a / b, 3) if b else None
 
 
-def score(run: Run) -> dict[str, Any]:
+def score(run: Run, implied: dict[str, Any] | None | bool = True) -> dict[str, Any]:
     """Counts from the design doc's metrics table that the baseline can be
     measured on today. Gates that need compose/voice (heavy moments, crisis,
     arguments) are reported as counts of moments where the bot would speak,
@@ -159,7 +159,9 @@ def score(run: Run) -> dict[str, Any]:
                    and "no_loop" in s.label.get("expect", []) and s.label["should"] == "quiet"
                    and s.decision.action != "quiet"]
 
-    implied = implied_rates(run, lab) if split else None
+    # implied rates read only labels and the chat, not the decisions: a caller that
+    # rescores many decision sets passes the first result back in (model_bench.fit)
+    implied = (implied_rates(run, lab) if split else None) if implied is True else implied
 
     return {
         "implied": implied,

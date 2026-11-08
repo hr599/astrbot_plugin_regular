@@ -51,14 +51,23 @@ class PromptTests(unittest.TestCase):
         self.assertEqual(p.count("</chat>"), 1)
 
     def test_parse(self):
-        for text, want in (("quiet", "quiet"), (" React\n", "react"), ('{"action": "reply"}', "reply"),
-                           ("reply.", "reply"), ('"quiet"', "quiet"), ("quiet or reply", None), ("好的", None),
-                           ("", None),
-                           # PR #28 review: a word inside prose or a bad JSON action isn't an answer
-                           ("I cannot reply to this.", None), ('{"action":"do not reply"}', None),
-                           ('{"action":"reply"', None), ('{"action": 1}', None), ("reply because it's funny", None)):
+        for text, want in (('{"react": 3, "reply": 7}', (3, 7)), (' {"reply": 0, "react": 9}\n', (9, 0)),
+                           ('```json\n{"react": 1, "reply": 2}\n```', (1, 2)),
+                           # PR #28 review: only a complete, exact answer counts
+                           ("reply", None), ("I cannot reply to this.", None), ('{"react": 3', None),
+                           ('{"react": 3, "reply": 10}', None), ('{"react": -1, "reply": 2}', None),
+                           ('{"react": 3.5, "reply": 2}', None), ('{"react": true, "reply": 2}', None),
+                           ('{"react": "3", "reply": 2}', None), ('{"react": 3, "reply": 2, "why": "x"}', None),
+                           ('{"react": 3}', None), ("[3, 7]", None), ("", None)):
             with self.subTest(text=text):
                 self.assertEqual(dm.parse(text), want)
+
+    def test_action_for(self):
+        self.assertEqual(dm.action_for((9, 9)), "reply")
+        self.assertEqual(dm.action_for((9, 4)), "react")
+        self.assertEqual(dm.action_for((4, 4)), "quiet")
+        self.assertEqual(dm.action_for((9, 9), (10, 10)), "quiet")  # 10 = never
+        self.assertEqual(dm.action_for((2, 3), (2, 3)), "reply")
 
     def test_only_soft_rules_go_to_the_model(self):
         runs, jobs = collect(real_like(), load_params(), ("阿灯", "灯灯", "灯"))
@@ -78,7 +87,7 @@ def fake_client(answer, data_dir: Path, *, fail_every=0, monthly=30):
         n["calls"] += 1
         if fail_every and n["calls"] % fail_every == 0:
             raise RuntimeError("boom")
-        assert "<chat>" in prompt and "quiet" in system
+        assert "<chat>" in prompt and '"react"' in system
         return answer(prompt), Usage(input_other=900, output=2), "stop"
 
     c = ModelClient(budget, providers={"decide": "ds"}, model_of=lambda pid: "deepseek-flash", call=call,
@@ -96,7 +105,7 @@ class ModelBenchTests(unittest.TestCase):
         return out, last, n, c, store, Path(d)
 
     def test_always_quiet_model_matches_the_rules_on_hard_moments(self):
-        out, last, n, *_ = self.run_bench(lambda p: "quiet")
+        out, last, n, *_ = self.run_bench(lambda p: '{"react": 0, "reply": 0}')
         self.assertIn("平衡准确率", out)
         self.assertEqual(last["with_model"]["explicit_missed"], 0)  # @s are never the model's call
         self.assertEqual(last["with_model"]["bot_loop_breaks"], 0)
@@ -104,7 +113,7 @@ class ModelBenchTests(unittest.TestCase):
         self.assertEqual(last["with_model"]["dev"]["recall"]["quiet"] >= last["rules"]["dev"]["recall"]["quiet"], True)
 
     def test_rerun_is_cached_and_free(self):
-        out, last, n, c, store, d = self.run_bench(lambda p: "react")
+        out, last, n, c, store, d = self.run_bench(lambda p: '{"react": 9, "reply": 0}')
         calls = n["calls"]
         asyncio.run(model_bench(real_like(), d, client=c, persona_prompt="你是阿灯。"))
         again = json.loads((d / "bench" / "model-last.json").read_text(encoding="utf-8"))
@@ -120,14 +129,14 @@ class ModelBenchTests(unittest.TestCase):
         self.assertEqual(last["with_model"]["dev"], last["rules"]["dev"])
 
     def test_limit_and_budget_stop(self):
-        out, last, *_ = self.run_bench(lambda p: "reply", limit=5)
+        out, last, *_ = self.run_bench(lambda p: '{"react": 0, "reply": 9}', limit=5)
         self.assertEqual(last["asked"], 5)
         self.assertIn("只问了前 5 条", out)
-        out, last, *_ = self.run_bench(lambda p: "reply", monthly=0.0001)
+        out, last, *_ = self.run_bench(lambda p: '{"react": 0, "reply": 9}', monthly=0.0001)
         self.assertGreater(last["over_budget"], 0)
 
     def test_numbers_only(self):
-        out, last, *_ = self.run_bench(lambda p: "reply")
+        out, last, *_ = self.run_bench(lambda p: '{"react": 0, "reply": 9}')
         blob = out + json.dumps(last, ensure_ascii=False)
         for r in real_like():
             for m in r.messages:
@@ -141,6 +150,61 @@ class ModelBenchTests(unittest.TestCase):
             self.assertIsInstance(r, AsyncReply)
             self.assertIn("没接上", asyncio.run(r.make()))
             st.close()
+
+
+def oracle(recs, react=(7, 2), reply=(2, 8), quiet=(1, 1)):
+    """A fake model that scores from your labels (via the target line), offset so
+    the default cut of 5 is wrong for reactions: only fitted cuts get it right."""
+    by_text = {}
+    for r in recs:
+        for m in r.messages:
+            if m.msg_id in r.labels and m.text:
+                by_text[m.text[:40]] = r.labels[m.msg_id]["should"]
+
+    def answer(prompt):
+        target = prompt.split("→ ", 1)[1].split("\n", 1)[0]
+        text = target.split("：", 1)[1]
+        should = next((v for k, v in by_text.items() if text.startswith(k[:20])), "quiet")
+        a, b = {"react": react, "reply": reply, "quiet": quiet}[should]
+        return json.dumps({"react": a, "reply": b})
+    return answer
+
+
+class FitTests(unittest.TestCase):
+    def test_fitted_cuts_recover_an_informative_model(self):
+        d = Path(tempfile.mkdtemp())
+        recs = real_like()
+        c, *_ = fake_client(oracle(recs, react=(4, 1)), d)  # reactions score 4: below the default cut
+        out = asyncio.run(model_bench(recs, d, client=c, persona_prompt="你是阿灯。"))
+        last = json.loads((d / "bench" / "model-last.json").read_text(encoding="utf-8"))
+        self.assertGreater(last["fitted"]["dev"]["balanced_accuracy"], last["with_model"]["dev"]["balanced_accuracy"])
+        self.assertGreaterEqual(last["fitted"]["dev"]["recall"]["react"], 0.5)
+        self.assertLessEqual(last["cuts"][0], 4)
+        self.assertIn("分界：表情", out)
+
+    def test_cuts_never_look_at_held_out_labels(self):
+        from bench.splits import is_test
+        recs = real_like()
+        flipped = []
+        for r in recs:
+            labels = {k: ({**v, "should": "reply"} if is_test(k) else v) for k, v in r.labels.items()}
+            flipped.append(Recording(r.name, r.source, r.messages, labels))
+        cuts = []
+        for rs in (recs, flipped):
+            d = Path(tempfile.mkdtemp())
+            c, *_ = fake_client(oracle(recs), d)  # same model answers both times
+            asyncio.run(model_bench(rs, d, client=c, persona_prompt="你是阿灯。"))
+            cuts.append(json.loads((d / "bench" / "model-last.json").read_text(encoding="utf-8"))["cuts"])
+        self.assertEqual(cuts[0], cuts[1])
+
+    def test_failed_calls_record_the_error_type_only(self):
+        d = Path(tempfile.mkdtemp())
+        c, *_ = fake_client(lambda p: '{"react": 0, "reply": 0}', d, fail_every=2)
+        out = asyncio.run(model_bench(real_like(), d, client=c, persona_prompt="你是阿灯。", limit=10))
+        last = json.loads((d / "bench" / "model-last.json").read_text(encoding="utf-8"))
+        self.assertEqual(last["errors"], {"RuntimeError": 5})
+        self.assertIn("RuntimeError 5", out)
+        self.assertNotIn("boom", json.dumps(last) + out)  # the message itself is never kept
 
 
 class Review28Tests(unittest.TestCase):
@@ -163,7 +227,7 @@ class Review28Tests(unittest.TestCase):
     def test_forget_during_a_batch_stops_the_queued_prompts(self):
         from bench.model_bench import ask_all
         d = tempfile.mkdtemp()
-        c, store, n = fake_client(lambda p: "quiet", Path(d))
+        c, store, n = fake_client(lambda p: '{"react": 0, "reply": 0}', Path(d))
         gate = asyncio.Event()
         real = c.call
 
@@ -187,7 +251,7 @@ class Review28Tests(unittest.TestCase):
     def test_bench_reports_a_forget_and_discards_the_run(self):
         import bench.model_bench as mb
         d = Path(tempfile.mkdtemp())
-        c, store, _ = fake_client(lambda p: "quiet", d)
+        c, store, _ = fake_client(lambda p: '{"react": 0, "reply": 0}', d)
         real = mb.ask_all
 
         async def forgetful(client, system, prompts, concurrency=6, gen=None):
@@ -203,7 +267,7 @@ class Review28Tests(unittest.TestCase):
 
     def test_forget_during_the_last_call_also_voids_the_run(self):
         d = Path(tempfile.mkdtemp())
-        c, store, n = fake_client(lambda p: "quiet", d)
+        c, store, n = fake_client(lambda p: '{"react": 0, "reply": 0}', d)
         real = c.call
 
         async def forget_mid_call(pid, system, prompt, params):
@@ -218,7 +282,7 @@ class Review28Tests(unittest.TestCase):
     def test_debug_summary_has_a_model_run_alone(self):
         from bench.commands import latest_summary
         d = Path(tempfile.mkdtemp())
-        c, *_ = fake_client(lambda p: "quiet", d)
+        c, *_ = fake_client(lambda p: '{"react": 0, "reply": 0}', d)
         asyncio.run(model_bench(real_like(), d, client=c, persona_prompt="你是阿灯。"))
         summ = latest_summary(d)
         self.assertIsNotNone(summ)

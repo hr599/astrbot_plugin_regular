@@ -324,16 +324,21 @@ add `--baseline` to replay the M1 baseline instead.
 The rules keep the clear cases (direct addresses and their limits, other bots,
 crisis, asleep, arguments, serious moments, not twice in a row, the share cap, a
 clear "talking to 阿灯"). For the rest, the decide model (`provider_decide`,
-thinking off) reads 阿灯's persona, the last 12 messages with speakers shown as
-letters (no QQ ids), and answers quiet, react or reply. The chat sits in a fenced
-block marked as data, and only those three words count as an answer.
+thinking off) reads 阿灯's persona and the last 12 messages, with speakers shown as
+letters and @-numbers hidden, and scores the moment twice, 0-9: how much he'd
+want to react, and how much he'd want to reply. The chat sits in a fenced block
+marked as data, and only an exact `{"react": n, "reply": n}` counts as an answer.
 
-`/reg bench model` (admin DM) runs this on your labelled moments only: it asks
-the model about the ones the rules weren't sure of and compares rules alone with
-rules + model, on dev and held-out labels, in numbers. The model isn't tuned on
-your labels, so both are fair tests. Calls are budgeted (they stop at the daily
-cap) and cached, so a rerun is free. `/reg bench model 20` asks only the first 20,
-a cheap first check. A full run on about 100 moments costs well under ¥1.
+Scores, not a single word, because a model asked to choose leans hard one way
+(the first run said quiet 194 times out of 197). Two cuts turn scores into an
+action: reply if the reply score reaches its cut, else react if the react score
+reaches its cut. `/reg bench model` (admin DM) asks about your labelled moments
+that the rules weren't sure of, then fits the cuts on your dev labels only and
+reports balanced accuracy for rules alone, the default cuts (5/5) and the fitted
+cuts, on dev and held-out. The held-out line is the fair test. Calls are budgeted
+and cached (refitting the cuts reuses the cached scores, free).
+`/reg bench model 20` asks only the first 20. A full run on about 200 moments
+cost about ¥0.06 in practice. A failed call is counted by error type only.
 
 For now this is bench-only: shadow decide is still the rules. Whether the model
 goes live depends on what this shows.
