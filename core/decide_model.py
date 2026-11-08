@@ -44,6 +44,19 @@ INSTRUCTIONS = """\
 只回答一个词：quiet、react 或 reply。"""
 
 
+_AT_ID = re.compile(r"@(\d{5,12})(?!\d)")
+
+
+def _hide_ids(t: str, ids: dict[str, str]) -> str:
+    """An @ with no known nickname is rendered as @<QQ number> (core/perceive); in the
+    prompt it becomes @某人1, @某人2…, the same number the same way within one prompt
+    (PR #28 review). Only this mention rendering, not every number in the text."""
+    def sub(m: re.Match) -> str:
+        ids.setdefault(m.group(1), f"某人{len(ids) + 1}")
+        return "@" + ids[m.group(1)]
+    return _AT_ID.sub(sub, t)
+
+
 def _clip(t: str) -> str:
     t = re.sub(r"\s+", " ", t or "").strip()
     return t if len(t) <= LINE_MAX else t[:LINE_MAX] + "…"
@@ -59,7 +72,7 @@ def _speaker(m: Msg, names: dict[str, str]) -> str:
     return names[m.sender]
 
 
-def _line(m: Msg, names: dict[str, str]) -> str:
+def _line(m: Msg, names: dict[str, str], ids: dict[str, str]) -> str:
     who = _speaker(m, names)
     if m.kind == "poke":
         return f"{who} 戳了戳{'阿灯' if m.poke_bot else '别人'}"
@@ -73,14 +86,15 @@ def _line(m: Msg, names: dict[str, str]) -> str:
     elif m.reply_to:
         tags.append("回复别人")
     tag = f"（{'，'.join(tags)}）" if tags else ""
-    return f"{who}{tag}：{_clip(m.text) or '[空]'}"
+    return f"{who}{tag}：{_clip(_hide_ids(m.text or '', ids)) or '[空]'}"
 
 
 def build_prompt(m: Msg, context: list[Msg], now: int, rhythm: str = "free") -> str:
     names: dict[str, str] = {}
+    ids: dict[str, str] = {}
     ctx = [c for c in context if c.msg_id != m.msg_id][-CONTEXT_LINES:]
-    lines = [_line(c, names) for c in ctx]
-    target = "→ " + _line(m, names)
+    lines = [_line(c, names, ids) for c in ctx]
+    target = "→ " + _line(m, names, ids)
     t = datetime.fromtimestamp(now + 8 * 3600, tz=timezone.utc).strftime("%H:%M")
     state = {"class": "在上课", "free": "有空", "night_owl": "夜猫子时间，最活跃", "asleep": "在睡觉"}.get(rhythm, "有空")
     chat = "\n".join(lines + [target]).replace("</chat>", "<\\/chat>")

@@ -147,7 +147,8 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
     if limit:
         jobs = jobs[:limit]
     stats = await ask_all(client, dm.system_prompt(persona_prompt), [p for _, p, _ in jobs], gen=gen)
-    if stats["forgotten"]:
+    if stats["forgotten"] or getattr(client.budget.store, "cache_gen", 0) != gen:
+        # also a forget that landed while the last calls were in flight (PR #28 review)
         return (f"运行中有人被遗忘（/reg forget），剩下的 {stats['forgotten']} 条没有发给模型，这次结果作废。"
                 "需要的话重新运行 /reg bench model。")
     n = apply_answers(runs, jobs, stats.pop("answers"))
