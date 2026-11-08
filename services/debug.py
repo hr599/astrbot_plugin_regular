@@ -18,7 +18,7 @@ from typing import Any
 ID_KEYS = {
     "user_id", "group_id", "self_id", "target_id", "operator_id", "sender_id",
     "qq", "uin", "id", "message_id", "message_seq", "real_id", "real_seq", "peer_id",
-    "msg_id",
+    "msg_id", "actor", "answers",
 }
 # Allowlist: only these keys keep their values as-is. They describe the event's
 # *shape* (types, flags, timings) or are our own trace fields. Everything else

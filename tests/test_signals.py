@@ -96,6 +96,25 @@ class PipelineSignalTests(unittest.TestCase):
         out = self.msg("隔了很久", uid=ME, mid=4, dt=900)
         self.assertNotIn("answers", out.reasons["signals"])  # too slow to count as an answer
 
+    def test_quoting_this_bot_is_not_answering_the_previous_human(self):
+        # PR #10 review: 阿灯's messages aren't stored, so person_of(quote) is None;
+        # that must not fall back to "the previous speaker"
+        self.msg("A 说的", uid=FRIEND, mid=1)
+        q = ev(group_msg([{"type": "reply", "data": {"id": "77"}}, {"type": "text", "data": {"text": "哈哈对"}}],
+                         uid=ME, mid=2, ts=self.t + 10))
+        q.reply_sender_uid = BOT  # what the adapter sets from the fetched quote
+        out = self.p.handle(q)
+        self.assertTrue(out.reasons["reply_to_bot"])
+        self.assertNotIn("answers", out.reasons["signals"])
+        # a quote of a human who isn't in the store (e.g. purged) doesn't guess either
+        q = ev(group_msg([{"type": "reply", "data": {"id": "78"}}, {"type": "text", "data": {"text": "嗯"}}],
+                         uid=FRIEND, mid=3, ts=self.t + 15))
+        q.reply_sender_uid = "70007"
+        self.assertNotIn("answers", self.p.handle(q).reasons["signals"])
+        # plain quick follow-ups between humans still count
+        out = self.msg("接一句", uid=ME, mid=4, dt=20)
+        self.assertEqual(out.reasons["signals"]["answers"], self.s.person_of(f"{SCOPE}:3"))
+
     def test_heat_rises_in_a_quick_back_and_forth_and_persists(self):
         lines = [("上次明明是你", FRIEND), ("我没有", ME), ("你每次都这样", FRIEND), ("凭什么说我", ME),
                  ("别吵了别吵了", "70007")]
@@ -132,6 +151,30 @@ class PipelineSignalTests(unittest.TestCase):
                          (True, True, ["128077"]))
         out = self.p.handle(ev(dict(base, is_add=False, message_id=999)))
         self.assertEqual((out.reasons["is_add"], out.reasons["target_found"]), (False, False))
+
+    def test_reactions_keep_who_and_which_message(self):
+        # PR #10 review: two people, same emoji, different messages -> distinguishable
+        self.msg("消息X", uid=FRIEND, mid=10)
+        self.msg("消息Y", uid=FRIEND, mid=11, dt=1)
+        base = {"post_type": "notice", "notice_type": "group_msg_emoji_like", "group_id": int(GROUP),
+                "self_id": int(BOT), "time": self.t + 30, "likes": [{"emoji_id": "128077", "count": 1}]}
+        self.p.handle(ev(dict(base, user_id=int(ME), message_id=10, is_add=True)))
+        self.p.handle(ev(dict(base, user_id=int("70007"), message_id=11, is_add=True)))
+        self.p.handle(ev(dict(base, user_id=int(ME), message_id=10, is_add=False)))
+        rows = [(r["msg_id"], json.loads(r["reasons"])) for r in self.s.db.execute(
+            "SELECT msg_id, reasons FROM traces WHERE reasons LIKE '%emoji_ids%' ORDER BY trace_id")]
+        me = self.s.person("aiocqhttp", ME, None, self.t)
+        other = self.s.person("aiocqhttp", "70007", None, self.t)
+        self.assertEqual([(m, r["actor"], r["is_add"]) for m, r in rows],
+                         [(f"{SCOPE}:10", me, True), (f"{SCOPE}:11", other, True), (f"{SCOPE}:10", me, False)])
+        # the debug bundle hashes both
+        blob = json.dumps(redact({"actor": me, "msg_id": f"{SCOPE}:10"}))
+        self.assertNotIn(SCOPE, blob)
+        self.assertNotIn(f'"actor": {me}', blob)
+        # opted-out reactors aren't kept
+        self.p.gate_cfg.opted_out_uids = {"70007"}
+        out = self.p.handle(ev(dict(base, user_id=int("70007"), message_id=11, is_add=True)))
+        self.assertNotIn("actor", out.reasons)
 
     def test_bundle_shows_cue_names_not_text(self):
         out = self.msg("我爷爷今天早上走了", mid=1)

@@ -48,9 +48,15 @@ class Pipeline:
         self.store.set_salience(ev.msg_id, sig.salience)
         # who answered whom: the quoted person, else the previous speaker if it was quick
         prev = self.store.before(ev.msg_id, 3)
-        answers = self.store.person_of(p.reply_to)
-        if answers is None and prev and prev[-1]["person_id"] != pid and ev.ts - prev[-1]["ts"] <= 90:
-            answers = prev[-1]["person_id"]
+        if reply_to_bot:
+            # answering 阿灯 (whose messages aren't stored): no human recipient, and no
+            # previous-speaker guess either (PR #10 review)
+            answers = None
+        else:
+            answers = self.store.person_of(p.reply_to)
+            if answers is None and not p.reply_to and prev and prev[-1]["person_id"] != pid \
+                    and ev.ts - prev[-1]["ts"] <= 90:
+                answers = prev[-1]["person_id"]
         to_bot = answers is not None and self.store.uid_of(answers) in self.gate_cfg.bot_uids
         if answers is not None and answers != pid and not from_bot and not to_bot:
             out["answers"] = answers  # human-to-human only: other bots never enter relationship records
@@ -81,6 +87,7 @@ class Pipeline:
 
         if verdict.action == "notice":
             reasons: dict[str, Any] = {"gate": verdict.reason, "notice": ev.notice_type}
+            trace_msg = None
             if ev.notice_type in ("group_recall", "friend_recall") and ev.notice_target:
                 target = f"{ev.scope_id}:{ev.notice_target}"
                 reasons["recalled_found"] = self.store.recall(target)
@@ -89,6 +96,12 @@ class Pipeline:
                 target = f"{ev.scope_id}:{ev.notice_target}"
                 reasons["is_add"] = ev.notice_extra.get("is_add", True)
                 reasons["target_found"] = self.store.has_message(target)
+                # who reacted to which message (PR #10 review): the target goes in the
+                # trace's msg_id, the reactor as a person id; opted-out people aren't kept
+                if reasons["target_found"]:
+                    trace_msg = target
+                if ev.sender_uid and ev.sender_uid not in self.gate_cfg.opted_out_uids:
+                    reasons["actor"] = self.store.person(ev.platform, ev.sender_uid, None, ev.ts)
                 reasons["emoji_ids"] = [str(x.get("emoji_id")) for x in (ev.notice_extra.get("likes") or [])
                                         if isinstance(x, dict)][:5]
                 reasons["from_bot"] = ev.sender_uid in self.gate_cfg.bot_uids
@@ -99,7 +112,7 @@ class Pipeline:
                     poke_bot=reasons["poked_bot"],
                 ))
             self.store.trace(
-                scope_id=ev.scope_id, msg_id=None, ended_at="gate", decision=None,
+                scope_id=ev.scope_id, msg_id=trace_msg, ended_at="gate", decision=None,
                 reasons=reasons, harness_version=HARNESS_VERSION, ts=ev.ts,
             )
             return Outcome("gate", "notice", reasons)
