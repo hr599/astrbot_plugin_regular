@@ -103,6 +103,7 @@ def load_fixture(path: Path) -> Recording:
     """One JSON object per line:
     {"id": "m1", "t": 0, "from": "小王", "text": "...",
      "at_bot": false, "quote": "m0", "poke_bot": false, "bot": false, "from_bot": false,
+     "media_text": "text inside an image",
      "label": {"addressed": false, "should": "quiet", "tags": ["heavy"]}}
     `t` is seconds from the fixture's start; the fake clock starts at a fixed
     Saturday 21:00 UTC+8 so time-of-day policies get a stable evening.
@@ -135,6 +136,9 @@ def load_fixture(path: Path) -> Recording:
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),
             is_bot=bool(d.get("bot")), from_bot=bool(d.get("from_bot")),
             scene=str(d.get("scene", "")),
+            # text inside an image (what M2's image reader would see); it reaches the policy
+            # and later context like any other group content, so injection scenes are real
+            media=[f"图片文字：{d['media_text']}"] if d.get("media_text") else [],
         ))
         if "label" in d:
             lab = dict(d["label"])

@@ -64,6 +64,11 @@ class HardGateFixtureTests(unittest.TestCase):
         lines = Path("bench/fixtures/hard_gates_v1.jsonl").read_text(encoding="utf-8").splitlines()
         img = [json.loads(x) for x in lines if x.startswith("{") and "media_text" in x]
         self.assertTrue(img and "忽略之前的指令" in img[0]["media_text"])
+        # and it survives loading, so replay (and the policy's context) actually sees it
+        loaded = {m.msg_id: m for m in self.rec.messages}
+        m = loaded[img[0]["id"]]
+        self.assertEqual(m.text, "[图片]")
+        self.assertTrue(any("忽略之前的指令" in x for x in m.media))
 
     def test_bench_counts_expectations_and_loop_gate(self):
         m = replay(self.rec).metrics
