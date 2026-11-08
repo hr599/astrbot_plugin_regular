@@ -44,7 +44,7 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
 
 def bench_command(store, data_dir: Path, args: list[str], *,
                   aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None,
-                  bot_uids=frozenset(), on_params_change=None) -> str:
+                  bot_uids=frozenset(), on_params_change=None, models=None, persona_prompt: str = ""):
     """group_ids: the watched groups. Saving uses only those (an old group left in
     the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
@@ -77,6 +77,19 @@ def bench_command(store, data_dir: Path, args: list[str], *,
         recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}",
                                bot_uids=bot_uids))
     recs += load_saved(bench_dir / "recordings")
+    if args and args[0].lower() == "model":
+        from ._core import AsyncReply
+        from .model_bench import model_bench
+        limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
+        todo = [r for r in recs if r.messages]
+
+        async def run() -> str:
+            try:
+                return await model_bench(todo, data_dir, client=models, persona_prompt=persona_prompt,
+                                         aliases=aliases, limit=limit)
+            except Exception as e:  # noqa: BLE001 - surface it to the admin
+                return f"bench model 出错：{type(e).__name__}: {e}"
+        return AsyncReply(run, placeholder="正在让模型判断…")
     if tuning:
         from .tune import tune_command
         return tune_command([r for r in recs if r.messages], data_dir, args[1:], aliases=aliases,
@@ -110,7 +123,9 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
             "action_agreement", "balanced_accuracy", "decided_by", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
+    model_last = data_dir / "bench" / "model-last.json"
     return {
+        "model": json.loads(model_last.read_text(encoding="utf-8")) if model_last.exists() else None,
         "file": runs[-1].name,
         "totals": d["totals"],
         "runs": [{"source": r["source"],

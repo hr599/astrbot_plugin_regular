@@ -319,6 +319,25 @@ data folder, which overrides the harness file and takes effect at once.
 `/reg bench tune reset` removes it. `python -m bench --db …` uses the same numbers;
 add `--baseline` to replay the M1 baseline instead.
 
+## M2b: a model for the moments the rules can't settle
+
+The rules keep the clear cases (direct addresses and their limits, other bots,
+crisis, asleep, arguments, serious moments, not twice in a row, the share cap, a
+clear "talking to 阿灯"). For the rest, the decide model (`provider_decide`,
+thinking off) reads 阿灯's persona, the last 12 messages with speakers shown as
+letters (no QQ ids), and answers quiet, react or reply. The chat sits in a fenced
+block marked as data, and only those three words count as an answer.
+
+`/reg bench model` (admin DM) runs this on your labelled moments only: it asks
+the model about the ones the rules weren't sure of and compares rules alone with
+rules + model, on dev and held-out labels, in numbers. The model isn't tuned on
+your labels, so both are fair tests. Calls are budgeted (they stop at the daily
+cap) and cached, so a rerun is free. `/reg bench model 20` asks only the first 20,
+a cheap first check. A full run on about 100 moments costs well under ¥1.
+
+For now this is bench-only: shadow decide is still the rules. Whether the model
+goes live depends on what this shows.
+
 Not yet: live decide doesn't wait for a speaker's burst to end (the bench does);
 that comes with live replies in M2c.
 
