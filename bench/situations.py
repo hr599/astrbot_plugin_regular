@@ -95,6 +95,23 @@ def load_saved(folder: Path) -> list[Recording]:
             for p in sorted(folder.glob("*.json"))]
 
 
+def forget_sender(folder: Path, sender: str) -> int:
+    """/reg forget: remove one person's messages (and their labels) from saved
+    recordings. sender is the store's person id as a string. Returns messages removed."""
+    removed = 0
+    if not folder.exists():
+        return 0
+    for p in sorted(folder.glob("*.json")):
+        d = json.loads(p.read_text(encoding="utf-8"))
+        gone = {m["msg_id"] for m in d["messages"] if m.get("sender") == sender}
+        if gone:
+            d["messages"] = [m for m in d["messages"] if m["msg_id"] not in gone]
+            d["labels"] = {k: v for k, v in d.get("labels", {}).items() if k not in gone}
+            p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+            removed += len(gone)
+    return removed
+
+
 # ---- synthetic fixtures ---------------------------------------------------------
 FIXTURE_DIR = Path(__file__).with_name("fixtures")
 

@@ -18,10 +18,12 @@ from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.outbound import reply_admin_dm
 from .bench.commands import bench_command, latest_summary
+from .bench.situations import forget_sender
 from .core.admin import AdminCommands
 from .core.decide import DEFAULT_ALIASES
 from .core.gate import GateConfig
 from .core.labeling import Labeler
+from .core.people_admin import PeopleAdmin
 from .core.pipeline import HARNESS_VERSION, Pipeline
 from .services.debug import RawDumper, build_bundle
 from .services.maintenance import Janitor
@@ -47,7 +49,10 @@ class Regular(Star):
             enabled=bool(config.get("raw_dump", False)),
             keep_days=int(config.get("raw_dump_keep_days", 3) or 3),
         )
-        self.gate_cfg = GateConfig(group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()})
+        self.gate_cfg = GateConfig(
+            group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()},
+            paused_groups={str(g).strip() for g in config.get("paused_group_ids", []) if str(g).strip()},
+        )
         self.aliases = tuple(
             str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
         ) or DEFAULT_ALIASES
@@ -57,6 +62,8 @@ class Regular(Star):
                             scopes=lambda: self.store.group_scopes(self.gate_cfg.group_ids)),
             bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases,
                                              group_ids=self.gate_cfg.group_ids),
+            people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
+                               save_paused=self._save_paused, forget_files=self._forget_files),
         )
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
         self._refresh_opt_outs()
@@ -118,6 +125,8 @@ class Regular(Star):
             "mode": "observe-only (never speaks); decide runs in shadow",
             "uptime_min": (int(time.time()) - self.started) // 60,
             "groups_watched": len(self.gate_cfg.group_ids),
+            "groups_paused": len(self.gate_cfg.paused_groups & self.gate_cfg.group_ids),
+            "opted_out": len(self.gate_cfg.opted_out_uids),
             "raw_dump": "on" if self.dumper.enabled else "off",
             "retention_days": self._retention_days(),
             **self.store.stats(),
@@ -141,6 +150,17 @@ class Regular(Star):
             self.config.save_config()
         except Exception:
             logger.exception("[regular] could not persist raw_dump setting")
+
+    def _save_paused(self, paused: set[str]) -> None:
+        self.config["paused_group_ids"] = sorted(paused)
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("[regular] could not persist paused_group_ids")
+
+    def _forget_files(self, uid: str, sender: str) -> dict[str, int]:
+        return {"raw": self.dumper.forget(uid),
+                "recordings": forget_sender(self.data_dir / "bench" / "recordings", sender)}
 
     def _retention_days(self) -> int:
         return max(1, int(self.config.get("transcript_retention_days", 30) or 30))

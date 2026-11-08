@@ -91,6 +91,30 @@ class RawDumper:
             if p.stat().st_mtime < cutoff:
                 p.unlink(missing_ok=True)
 
+    def forget(self, uid: str) -> int:
+        """/reg forget: drop this person's own events from the local raw dumps.
+        Returns lines removed. (Other people's events that quote them keep the quote
+        AstrBot attached; dumps are off by default and pruned after a few days.)"""
+        uid, removed = str(uid), 0
+        for p in sorted(self.folder.glob("raw-*.jsonl")):
+            keep = []
+            for ln in p.read_text(encoding="utf-8").splitlines():
+                try:
+                    raw = json.loads(ln).get("raw") or {}
+                except json.JSONDecodeError:
+                    keep.append(ln)
+                    continue
+                sender = raw.get("sender") if isinstance(raw, dict) else None
+                ids = {str(raw.get(k)) for k in ("user_id", "operator_id")} if isinstance(raw, dict) else set()
+                if isinstance(sender, dict):
+                    ids.add(str(sender.get("user_id")))
+                if uid in ids:
+                    removed += 1
+                else:
+                    keep.append(ln)
+            p.write_text("".join(x + "\n" for x in keep), encoding="utf-8")
+        return removed
+
     def tail(self, n: int = 300) -> list[dict[str, Any]]:
         files = sorted(self.folder.glob("raw-*.jsonl"))
         lines: list[str] = []
