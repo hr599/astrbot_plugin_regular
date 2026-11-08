@@ -133,6 +133,20 @@ class ComposeTests(unittest.TestCase):
         self.assertIn("placeholder", out.hits)
         self.assertIn("代号", seen[1][1])
 
+    def test_a_forget_during_the_first_draft_stops_the_redraft(self):
+        # PR #30 review: the redraft would carry the forgotten chat
+        c, store, seen = client_for(["好的！希望对你有帮助", "烤冷面"], self.d)
+        real = c.call
+
+        async def forget_mid(pid, system, prompt, params):
+            store.cache_gen += 1
+            return await real(pid, system, prompt, params)
+        c.call = forget_mid
+        out = asyncio.run(cm.compose(c, self.persona, self.m, self.ctx, self.m.ts, cache=True))
+        self.assertEqual(out.outcome, "forgotten")
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(store.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 0)
+
     def test_length_follows_the_group(self):
         long = "我觉得吧这个事情其实挺复杂的因为大家口味都不一样所以最好还是投票决定比较公平你们觉得呢"
         out, _ = self.run_c([long, "投票吧"], group_p90_len=12)

@@ -112,7 +112,7 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
             if getattr(store, "cache_gen", 0) != gen:
                 return  # someone was forgotten: nothing more goes out
             results[i] = await cm.compose(client, persona, m, ctx, now, rhythm=rhythm_state(now, windows),
-                                          group_p90_len=p90, cache=True, rng=random.Random(i))
+                                          group_p90_len=p90, cache=True, rng=random.Random(i), gen=gen)
 
     await asyncio.gather(*(one(i) for i in range(len(todo))))
     if getattr(store, "cache_gen", 0) != gen:

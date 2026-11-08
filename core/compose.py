@@ -111,7 +111,7 @@ def note_for(kinds: list[str]) -> str:
 
 @dataclass
 class Composed:
-    outcome: str  # send | pass | drop | failed | over_budget
+    outcome: str  # send | pass | drop | failed | over_budget | forgotten
     parts: list[str] = field(default_factory=list)
     delays: list[float] = field(default_factory=list)
     attempts: int = 0
@@ -124,8 +124,14 @@ class Composed:
 
 async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhythm: str = "free",
                   group_p90_len: int | None = None, rules: dict[str, Any] | None = None,
-                  cache: bool = False, rng: random.Random | None = None) -> Composed:
-    """persona: core.persona.Persona (prompt, protected texts, examples, canary)."""
+                  cache: bool = False, rng: random.Random | None = None, gen: int | None = None) -> Composed:
+    """persona: core.persona.Persona (prompt, protected texts, examples, canary).
+    gen: the store's forget generation when the chat was read. Checked before every
+    model request (the redraft too): after a /reg forget, nothing more goes out
+    (PR #30 review)."""
+    store = client.budget.store
+    if gen is None:
+        gen = getattr(store, "cache_gen", 0)
     system = system_prompt(persona.system_prompt())
     base = build_prompt(m, context, now, rhythm)
     known = render_chat(m, context, CONTEXT_LINES) + "\n" + persona.core
@@ -134,6 +140,9 @@ async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhyt
     out = Composed("drop")
     prompt = base
     for attempt in (0, 1):
+        if getattr(store, "cache_gen", 0) != gen:
+            out.outcome = "forgotten"
+            return out
         try:
             r = await client.generate("reply", system=system, prompt=prompt, max_tokens=MAX_TOKENS,
                                       temperature=TEMPERATURE, cache=cache)
