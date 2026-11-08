@@ -96,7 +96,7 @@ class ClientTests(unittest.TestCase):
     def test_call_records_usage(self):
         r = self.gen("reply", max_tokens=16, temperature=0.7)
         self.assertEqual((r.text, r.model, r.cached), ("收到", "deepseek-flash", False))
-        self.assertEqual(self.calls[0][3], {"max_tokens": 16, "temperature": 0.7})
+        self.assertEqual(self.calls[0][3], {"max_tokens": 16, "thinking": "off", "temperature": 0.7})
         row = self.s.db.execute("SELECT role, input_other, input_cached, output, ok FROM model_calls").fetchone()
         self.assertEqual(tuple(row), ("reply", 30, 10, 2, 1))
 
@@ -195,7 +195,7 @@ class AdapterTests(unittest.TestCase):
     def test_limit_reaches_the_sdk_and_provider_config_cant_raise_it(self):
         from adapter.llm import make_call
         ctx, sent = self.ctx(custom_extra_body={"max_tokens": 4096})
-        text, u = asyncio.run(make_call(ctx)("p", "sys", "hi", {"max_tokens": 16, "temperature": 0.2}))
+        text, u, _ = asyncio.run(make_call(ctx)("p", "sys", "hi", {"max_tokens": 16, "temperature": 0.2}))
         self.assertEqual(sent[0]["max_tokens"], 16)
         self.assertEqual(sent[0]["temperature"], 0.2)
         self.assertNotIn("extra_body", sent[0])  # the provider's 4096 isn't merged in
@@ -207,7 +207,7 @@ class AdapterTests(unittest.TestCase):
         u = types.SimpleNamespace(prompt_tokens=10, completion_tokens=2,
                                   prompt_tokens_details=types.SimpleNamespace(cached_tokens=4))
         ctx, sent = self.ctx(model="gpt-6.1-terra", usage=u)
-        _, usage = asyncio.run(make_call(ctx)("p", "", "hi", {"max_tokens": 16}))
+        _, usage, _ = asyncio.run(make_call(ctx)("p", "", "hi", {"max_tokens": 16}))
         self.assertEqual(sent[0]["max_completion_tokens"], 16)
         self.assertNotIn("max_tokens", sent[0])
         self.assertEqual((usage.input_other, usage.input_cached), (6, 4))
@@ -233,6 +233,103 @@ class AdapterTests(unittest.TestCase):
         with self.assertRaises(ValueError):  # extra can't override what the budget checked (#20)
             asyncio.run(c.generate("reply", prompt="x", max_tokens=16, extra={"max_tokens": 32768}))
         self.assertEqual(len(sent), 1)
+
+
+class ThinkingTests(unittest.TestCase):
+    """First live test (Nov 8): DeepSeek thinks by default and the thinking ate the
+    16-token limit, leaving no answer; GPT-6.1 Terra hit its limit the same way."""
+
+    def capture(self, model, finish="stop", content="收到", reasoning=0):
+        sent = []
+
+        async def create(**kw):
+            sent.append(kw)
+            u = types.SimpleNamespace(prompt_tokens=20, completion_tokens=16, prompt_cache_hit_tokens=0,
+                                      completion_tokens_details=types.SimpleNamespace(reasoning_tokens=reasoning))
+            return types.SimpleNamespace(usage=u, choices=[types.SimpleNamespace(
+                finish_reason=finish, message=types.SimpleNamespace(content=content))])
+
+        prov = types.SimpleNamespace(get_model=lambda: model, client=types.SimpleNamespace(
+            chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create))))
+        ctx = types.SimpleNamespace(get_provider_by_id=lambda pid: prov)
+        return ctx, sent
+
+    def call(self, ctx, **params):
+        from adapter.llm import make_call
+        return asyncio.run(make_call(ctx)("p", "", "hi", {"max_tokens": 64, **params}))
+
+    def test_deepseek_thinking_switch(self):
+        ctx, sent = self.capture("deepseek-flash")
+        self.call(ctx, thinking="off", temperature=0.7)
+        self.assertEqual(sent[0]["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", sent[0])
+        self.assertEqual(sent[0]["temperature"], 0.7)
+        self.call(ctx, thinking="high", temperature=0.7)
+        self.assertEqual(sent[1]["extra_body"], {"thinking": {"type": "enabled"}})
+        self.assertEqual(sent[1]["reasoning_effort"], "high")
+        self.assertNotIn("temperature", sent[1])  # ignored while thinking anyway
+
+    def test_openai_reasoning_effort(self):
+        ctx, sent = self.capture("gpt-6.1-terra")
+        self.call(ctx, thinking="off")
+        self.assertEqual((sent[0]["reasoning_effort"], sent[0]["max_completion_tokens"]), ("none", 64))
+        self.call(ctx, thinking="low", temperature=0.2)
+        self.assertEqual(sent[1]["reasoning_effort"], "low")
+        self.assertNotIn("temperature", sent[1])
+        self.assertNotIn("extra_body", sent[1])
+
+    def test_finish_reason_and_reasoning_tokens(self):
+        ctx, _ = self.capture("deepseek-flash", finish="length", content="", reasoning=16)
+        text, usage, finish = self.call(ctx, thinking="high")
+        self.assertEqual((text, finish, usage.reasoning, usage.output), ("", "length", 16, 16))
+
+    def client(self, ctx, store):
+        from adapter.llm import make_call, make_model_of
+        b = Budget(store, P, monthly={"deepseek": 50, "openai": 30})
+        return ModelClient(b, providers={r: "p" for r in ("decide", "reply", "caption", "dream", "judge")},
+                           model_of=make_model_of(ctx), call=make_call(ctx)), b
+
+    def test_empty_or_truncated_is_not_ok_and_not_cached(self):
+        s = Store(":memory:")
+        for finish, content, outcome in (("length", "", "truncated"), ("stop", "  ", "empty"),
+                                         ("length", "收", "truncated"), ("stop", "收到", "ok")):
+            with self.subTest(outcome=outcome, content=content):
+                ctx, _ = self.capture("deepseek-flash", finish=finish, content=content)
+                c, _ = self.client(ctx, s)
+                r = asyncio.run(c.generate("judge", prompt=f"q{finish}{content}", max_tokens=64, cache=True))
+                self.assertEqual(r.outcome, outcome)
+                row = s.db.execute("SELECT ok, finish_reason FROM model_calls ORDER BY rowid DESC").fetchone()
+                self.assertEqual((row[0], row[1]), (int(outcome == "ok"), finish))
+        self.assertEqual(s.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 1)  # only the good one
+
+    def test_role_defaults_and_extra_cant_flip_thinking(self):
+        s = Store(":memory:")
+        ctx, sent = self.capture("deepseek-flash")
+        c, _ = self.client(ctx, s)
+        asyncio.run(c.generate("reply", prompt="hi", max_tokens=64))
+        self.assertEqual(sent[-1]["extra_body"], {"thinking": {"type": "disabled"}})
+        asyncio.run(c.generate("dream", prompt="hi", max_tokens=64))
+        self.assertEqual(sent[-1]["extra_body"]["thinking"], {"type": "enabled"})
+        with self.assertRaises(ValueError):
+            asyncio.run(c.generate("reply", prompt="hi", max_tokens=64, extra={"thinking": {"type": "enabled"}}))
+        with self.assertRaises(ValueError):
+            asyncio.run(c.generate("reply", prompt="hi", max_tokens=64, thinking="medium"))
+
+    def test_smoke_test_reports_pass_and_fail(self):
+        s = Store(":memory:")
+        for content, finish, word in (("收到", "stop", "通过"), ("", "length", "失败：输出被上限截断"),
+                                      ("", "stop", "失败：没有回答文字")):
+            with self.subTest(word=word):
+                ctx, sent = self.capture("deepseek-flash", finish=finish, content=content)
+                c, b = self.client(ctx, s)
+                text = asyncio.run(ModelAdmin(c, b).handle("model", ["test", "reply"]).make())
+                self.assertIn(word, text)
+                self.assertIn("思考 off，上限 64", text)
+        ctx, sent = self.capture("deepseek-v4-pro")
+        c, b = self.client(ctx, s)
+        text = asyncio.run(ModelAdmin(c, b).handle("model", ["test", "dream"]).make())
+        self.assertIn("思考 high，上限 2048", text)
+        self.assertEqual(sent[-1]["max_tokens"], 2048)
 
 
 class FollowUpTests(unittest.TestCase):

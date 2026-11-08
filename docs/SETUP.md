@@ -257,7 +257,12 @@ so it's ready, and lets you test each model once.
    must be OpenAI-compatible (DeepSeek and OpenAI are), and the provider's
    "custom extra body" setting is not applied to this plugin's calls.
 3. From your DM: `/reg model test reply` (and the other roles). Each sends one
-   tiny prompt and tells you the model, the reply, the time and the cost.
+   tiny prompt and says 通过 (passed) only if a real answer came back: an empty
+   answer or one cut off by the output limit is a failure, with the finish
+   reason and how many tokens went to thinking. Thinking per role: decide,
+   reply and caption run with thinking off (DeepSeek thinks by default, and the
+   thinking counts against the output limit); dream thinks (high); the judge
+   reasons a little (low). The test allows 64 tokens without thinking, 2048 with.
 4. `/reg budget` shows today's and this month's spend against the caps.
 
 Budgets: `budget_deepseek_monthly_cny` (50) and `budget_openai_monthly_usd` (30)

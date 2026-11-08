@@ -17,7 +17,7 @@ try:  # inside the plugin package
 except ImportError:  # repo root on sys.path (tests, CLI)
     from core.perceive import is_command_like as _is_command_like
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
 # when its message is purged or recalled, unless it was saved into a recording), and
@@ -60,6 +60,12 @@ MIGRATIONS = {
       key TEXT PRIMARY KEY, model TEXT NOT NULL, created INTEGER NOT NULL,
       text TEXT NOT NULL, usage TEXT
     );
+    """,
+    # v5: why a model call ended, and how much of its output went to thinking. ok now
+    # means "a usable answer": an empty or cut-off answer is recorded ok=0 (live test).
+    5: """
+    ALTER TABLE model_calls ADD COLUMN finish_reason TEXT;
+    ALTER TABLE model_calls ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;
     """,
 }
 SESSION_GAP_S = 30 * 60  # a pause this long starts a new session
