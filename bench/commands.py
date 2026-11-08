@@ -34,7 +34,8 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
 
 
 def bench_command(store, data_dir: Path, args: list[str], *,
-                  aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None) -> str:
+                  aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None,
+                  bot_uids=frozenset()) -> str:
     """group_ids: the watched groups. Saving uses only those (an old group left in
     the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
@@ -49,7 +50,8 @@ def bench_command(store, data_dir: Path, args: list[str], *,
         lines = []
         for sc in watched:
             gid = sc.rsplit(":", 1)[-1]
-            rec = from_store(store, sc, since_ts=since, name=name if len(watched) == 1 else f"{name}-{gid}")
+            rec = from_store(store, sc, since_ts=since, name=name if len(watched) == 1 else f"{name}-{gid}",
+                             bot_uids=bot_uids)
             if not any(m.kind == "message" for m in rec.messages):
                 lines.append(f"群 {gid}：最近 {SAVE_DAYS} 天没有记录，没存。")
                 continue
@@ -62,7 +64,8 @@ def bench_command(store, data_dir: Path, args: list[str], *,
     recs: list[Recording] = []
     for sc in watched:
         gid = sc.rsplit(":", 1)[-1]
-        recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}"))
+        recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}",
+                               bot_uids=bot_uids))
     recs += load_saved(bench_dir / "recordings")
     recs += load_fixtures()
     runs = [replay(r, aliases=aliases) for r in recs if r.messages]

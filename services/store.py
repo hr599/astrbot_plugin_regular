@@ -143,7 +143,8 @@ class Store:
     def messages_in(self, scope_id: str, since_ts: int = 0, until_ts: int | None = None) -> list[sqlite3.Row]:
         """Messages oldest first, with the sender's latest display name."""
         sql = """SELECT m.rowid AS rid, m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
-                              ORDER BY a.last_seen DESC LIMIT 1) AS sender_name
+                              ORDER BY a.last_seen DESC LIMIT 1) AS sender_name,
+                        (SELECT p.platform_uid FROM people p WHERE p.person_id=m.person_id) AS sender_uid
                  FROM messages m WHERE m.scope_id=? AND m.ts>=?"""
         args: list = [scope_id, since_ts]
         if until_ts is not None:
@@ -218,6 +219,43 @@ class Store:
                ORDER BY m.ts DESC LIMIT ?""",
             (scope_id, limit),
         ).fetchall()
+
+    # ---- cheap signals (task D) -----------------------------------------
+    def reply_depth(self, msg_id: str | None, limit: int = 10) -> int:
+        """How many stored messages this one's quote chain reaches back through."""
+        depth, cur, seen = 0, msg_id, set()
+        while cur and depth < limit and cur not in seen:
+            seen.add(cur)
+            row = self.db.execute("SELECT reply_to FROM messages WHERE msg_id=?", (cur,)).fetchone()
+            if not row:
+                break
+            depth += 1
+            cur = row[0]
+        return depth
+
+    def person_of(self, msg_id: str | None) -> int | None:
+        if not msg_id:
+            return None
+        row = self.db.execute("SELECT person_id FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
+        return row[0] if row else None
+
+    def set_salience(self, msg_id: str, value: float) -> None:
+        self.db.execute("UPDATE messages SET salience=? WHERE msg_id=?", (float(value), msg_id))
+        self.db.execute(
+            """UPDATE sessions SET salience_sum=salience_sum+? WHERE session_id=
+               (SELECT session_id FROM messages WHERE msg_id=?)""", (float(value), msg_id))
+
+    def heat(self, scope_id: str) -> tuple[float, int | None]:
+        row = self.db.execute("SELECT heat, updated FROM bot_state WHERE scope_id=?", (scope_id,)).fetchone()
+        return (row[0], row[1]) if row else (0.0, None)
+
+    def set_heat(self, scope_id: str, value: float, ts: int) -> None:
+        value = max(0.0, min(1.0, float(value)))
+        self.db.execute(
+            """INSERT INTO bot_state (scope_id, heat, updated) VALUES (?,?,?)
+               ON CONFLICT (scope_id) DO UPDATE SET heat=excluded.heat, updated=excluded.updated""",
+            (scope_id, value, ts),
+        )
 
     def has_message(self, msg_id: str) -> bool:
         return self.db.execute("SELECT 1 FROM messages WHERE msg_id=?", (msg_id,)).fetchone() is not None
