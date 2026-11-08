@@ -114,6 +114,17 @@ _SPECIFICS = [
 _QUOTE = re.compile(r"[「“\"]([^」”\"]{4,})[」”\"]")
 
 
+_NUMCH = rf"\d.{_CN_NUM}"
+
+
+def _in_context(tok: str, ctx: str) -> bool:
+    """tok appears in ctx as a whole number: "50块" is not supported by "150块",
+    nor "12" by "120". Boundaries only apply where tok starts/ends with a numeral."""
+    pre = rf"(?<![{_NUMCH}])" if re.match(rf"[{_NUMCH}]", tok) else ""
+    post = rf"(?![\d{_CN_NUM}])" if re.search(rf"[{_NUMCH}]$", tok) else ""
+    return re.search(pre + re.escape(tok) + post, ctx) is not None
+
+
 def made_up_specifics(text: str, context: str) -> list[Hit]:
     """Exact numbers, dates, times, prices and quotes that appear in neither the
     context (thread + injected memory) nor elsewhere in what it was given.
@@ -126,7 +137,7 @@ def made_up_specifics(text: str, context: str) -> list[Hit]:
             if tok in seen:
                 continue
             seen.add(tok)
-            if tok not in ctx:
+            if not _in_context(tok, ctx):
                 out.append(Hit(f"specific_{kind}", tok))
     for m in _QUOTE.finditer(t):
         if re.sub(r"\s+", "", m.group(1)) not in ctx:

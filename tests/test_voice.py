@@ -97,6 +97,13 @@ class SpecificsTests(unittest.TestCase):
         ctx = "老周: 讲座是周二 下午3点"
         self.assertEqual(made_up_specifics("周二下午3点 我记下了", ctx), [])
 
+    def test_altered_number_is_not_supported_by_a_longer_one(self):
+        # Codex P2 on #9: "50块" sits inside "150块" but is a different price
+        self.assertEqual(check("门票50块", context="门票150块", rules={}).verdict, "rewrite")
+        self.assertEqual([h.detail for h in made_up_specifics("房号12", "房号120")], ["12"])
+        self.assertEqual(made_up_specifics("门票150块", "门票150块"), [])
+        self.assertEqual(made_up_specifics("50块的那个", "￥50块"), [])
+
     def test_made_up_quote(self):
         hits = made_up_specifics("他原话是“我明天一定到”", context="他说会来")
         self.assertEqual([h.kind for h in hits], ["specific_quote"])
