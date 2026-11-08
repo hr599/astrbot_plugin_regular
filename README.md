@@ -4,14 +4,15 @@ An [AstrBot](https://github.com/AstrBotDevs/AstrBot) plugin that aims to be a
 humanlike regular in one QQ friends group: it reads along, remembers what
 matters, and speaks when a regular would.
 
-**Status: M0, observe-only.** It logs the configured group and never speaks there.
+**Status: M1, observe-only.** It logs the configured group, runs its decide stage in
+shadow (recording what it *would* do), and never speaks there.
 
 ## Milestones
 
 | | What | State |
 |---|---|---|
-| M0 | Skeleton: gate, perceive, store, traces, admin DM commands | this branch |
-| M1 | Bench: replay transcripts, score decisions | next |
+| M0 | Skeleton: gate, perceive, store, traces, admin DM commands | done |
+| M1 | Bench: replay on a fake clock, labels, scores, trace viewer; baseline decide in shadow | this branch |
 | M2 | Speaking: decide → compose → voice | |
 | M3 | Memory: claims, episodes, dream pass | |
 | M4 | Social: relationships, mood, stickers | |
@@ -22,7 +23,8 @@ matters, and speaks when a regular would.
 ```
 main.py            AstrBot entry: one listener that stops every event
 adapter/           the only code that imports astrbot
-core/              framework-free: onebot parsing, gate, perceive, pipeline, admin
+core/              framework-free: onebot parsing, gate, perceive, decide, labeling, pipeline, admin
+bench/             replay bench: recordings, runner, scoring, HTML trace viewer, synthetic fixtures
 services/          SQLite store (schema.sql), raw dumps, redacted debug bundles
 tests/             stdlib unittest, no AstrBot needed
 docs/SETUP.md      AstrBot settings, LLBot, live-account checklist

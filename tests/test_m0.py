@@ -173,7 +173,7 @@ class PipelineTests(unittest.TestCase):
         self.assertIsNone(out.admin_reply)
         self.assertEqual(out.reasons["injection_flags"], ["ignore_previous"])
         t = self.s.recent_traces(1)[0]
-        self.assertEqual((t["ended_at"], t["decision"], t["harness_version"]), ("perceive", "quiet", "m0"))
+        self.assertEqual((t["ended_at"], t["decision"], t["harness_version"]), ("perceive", "quiet", "m1-baseline"))
 
     def test_unwatched_leaves_no_record(self):
         self.p.handle(ev(group_msg("hi", group=OTHER_GROUP)))

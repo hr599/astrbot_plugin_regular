@@ -75,6 +75,89 @@ recalls; how a sticker differs from a photo; whether self-messages are reported.
 Two more checks need the speaking path and come with M2: sending reactions/pokes
 via `call_action`, and the bot DMing you.
 
+## M1: labels and the bench
+
+The bot still never speaks. What's new: every trace now records what it *would*
+have done (`shadow` in traces, policy `m1-baseline`), and you can grade that.
+
+**Labeling (from your DM).** Send `/reg label`. The bot sends a batch of up to 5
+logged moments (each marked →, with the few messages that came before it) and a
+short guide the first time. Answer the whole batch in one line, in order:
+`/reg label 5 5 3 4 5` (or `55345`; `s` skips one). The next batch follows.
+
+| Answer | Meaning |
+|---|---|
+| `1` | meant for 阿灯, it should reply |
+| `2` | meant for 阿灯, a reaction is enough |
+| `3` | not meant for it, but it would chime in |
+| `4` | not meant for it, a reaction at most |
+| `5` | not meant for it, stay quiet |
+| `s` | skip (unsure is fine) |
+
+- **Label as 阿灯, not as yourself.** It's a quiet regular, around a tenth of the
+  group's messages. "Meant for it" means talking *to* it (its name as an address,
+  a question to it, picking up its line); just mentioning it doesn't count.
+- **Obvious moments aren't asked.** An @ of the bot or a quote of its message is
+  always for it and always answered, by rule.
+- **Expect mostly 4s and 5s for now.** Nobody talks to 阿灯 yet because it hasn't
+  spoken. Your labels mainly measure false alarms and "would a regular chime in",
+  the hardest part of M2. The synthetic fixtures cover being addressed.
+- **One label in five is held out** (fixed by message id). Tuning never looks at
+  those; the bench reports both, so a rule that memorised your labels shows up as
+  a gap instead of a fake win.
+- A message recalled or expired while it's on your screen is dropped, not labeled.
+- `/reg label help` shows the guide again.
+
+Start with 30–50, spread over days *and* nights. About 200 is the design doc's
+target for the addressed-to-bot score; ~10 a day gets there in a few weeks.
+
+**Running the bench.** Send `/reg bench`. It replays three things through the
+same decide code the live bot uses, on a fake clock (each moment is decided at
+the time it happened):
+
+- everything currently logged, with your labels;
+- any recordings you saved with `/reg bench save`;
+- the synthetic fixtures that ship in `bench/fixtures/`.
+
+It replies with a short score summary and the path to an HTML trace viewer in
+`bench/runs/` (open it locally; it contains real messages, so don't share it).
+Tick "only misses and disagreements" to see just what it got wrong.
+`/reg debug` now includes the latest bench numbers (numbers only) for me.
+
+You can also run it from a terminal in the plugin folder:
+`python -m bench --db <path to regular.db>`; without `--db` it runs the fixtures only.
+It reads `bot_aliases` from the plugin's AstrBot config (found from the db path), so
+it scores exactly like `/reg bench`; `--aliases 阿灯,灯灯,灯` overrides. The report
+header shows which aliases a run used.
+
+**Saving a recording.** `/reg bench save [name]` freezes the last 7 days of logs
+plus your labels into `bench/recordings/<name>.json`. Saved recordings are
+**not** cleaned up by the 30-day retention (that's the point: a fixed test set),
+and they contain real messages. The design doc asks for everyone's OK before
+recording a week of the group; that's your call with your friends.
+
+**What the scores mean (baseline).**
+- *explicit missed* must be 0: every @, quote of a bot message and poke gets an answer. Hard gate.
+- *addressed precision / recall*: of the moments you said were for 阿灯, how many it spotted, and how often it thought something was for it when it wasn't.
+- *action agreement*: how often its quiet/react/reply matches your label.
+- *bot share*: what fraction of the chat would be 阿灯; target under about 10%.
+
+The baseline follows the design doc's "who's talking to whom": an @, a quote of
+its message or a poke always gets a reply; its name counts as *likely* addressed
+(the bench scores that as detected) but doesn't force a reply, because people
+also talk *about* the bot. It never reacts and never chimes in on its own, so
+expect it to miss name addresses that deserve a reply, implied addresses, and
+every "a regular would chime in" moment. That's the bar M2 has to beat.
+
+**Command-like messages** (`/`, `!` or `#` followed by letters, from anyone in the
+group) are no longer stored at all, per the design doc; the trace just notes one
+arrived. The upgrade removes the ones M0 had logged. A message starting with
+`...` or `。。。` is ordinary chat.
+
+**Name aliases.** The plugin config has `bot_aliases` (default 阿灯 / 灯灯 / 灯).
+Two-character names count anywhere; a single 灯 only counts when it's used as a
+name (灯，你觉得呢), not in 开灯 or 灯光.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`
@@ -82,6 +165,8 @@ via `call_action`, and the bot DMing you.
 - `regular.db`: transcripts and traces (retention: `transcript_retention_days`, default 30)
 - `raw/`: raw event dumps while `raw_dump` is on
 - `debug/`: bundles from `/reg debug`
+- `bench/runs/`: bench reports (HTML trace viewer + numbers)
+- `bench/recordings/`: recordings you saved; not subject to retention
 
 None of this is ever committed; `.gitignore` covers it.
 

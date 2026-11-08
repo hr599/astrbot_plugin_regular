@@ -31,8 +31,9 @@ SAFE_KEYS = {
     "count", "face_type", "duration", "file_size", "role", "level",
     # our trace / dump notes
     "at", "action", "gate", "notice", "stored", "mentions_bot", "replied_to",
-    "command_like", "injection_flags", "media", "m0", "recalled_found",
-    "poked_bot", "reply_found", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
+    "command_like", "injection_flags", "media", "m0", "mode", "shadow", "would", "addressed",
+    "address_kind", "signals", "policy", "recalled_found",
+    "poked_bot", "reply_found", "reply_to_bot", "image_subtypes", "ended_at", "decision", "harness_version", "trace_id", "ts",
 }
 _SALT = "regular-debug"
 
@@ -113,6 +114,7 @@ def build_bundle(
     traces: list[dict[str, Any]],
     raw_events: list[dict[str, Any]],
     log_lines: list[str] | None = None,
+    bench: dict[str, Any] | None = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"regular-debug-{time.strftime('%Y%m%d-%H%M%S')}.zip"
@@ -137,6 +139,9 @@ def build_bundle(
         z.writestr("status.json", json.dumps(status, ensure_ascii=False, indent=2, default=str))
         z.writestr("traces.json", json.dumps(safe_traces, ensure_ascii=False, indent=1))
         z.writestr("raw_events.json", json.dumps(redact(raw_events), ensure_ascii=False, indent=1, default=str))
+        if bench:
+            # numbers only (built by bench.commands.latest_summary): no text, no ids
+            z.writestr("bench.json", json.dumps(bench, ensure_ascii=False, indent=1))
         if log_lines:
             z.writestr("log.txt", "\n".join(log_lines))
     return path

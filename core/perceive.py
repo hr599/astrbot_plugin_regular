@@ -20,7 +20,9 @@ _INJECTION_PATTERNS = [
     ("fake_role_tag", re.compile(r"</?\s*(system|assistant|instructions?)\s*>|\[\s*(system|SYSTEM)\s*\]")),
 ]
 
-_COMMAND_PREFIX = re.compile(r"^\s*[/!！#＃.。]\s*[A-Za-z一-鿿]")
+# The design doc: "/, ! or # followed by letters" is command-like; a message that
+# starts with "..." or "。。。" is ordinary chat, so . and 。 are not prefixes.
+_COMMAND_PREFIX = re.compile(r"^\s*[/!！#＃]\s*[A-Za-z\u4e00-\u9fff]")
 
 _PLACEHOLDER = {
     "face": "[表情]",
@@ -68,6 +70,11 @@ def _is_sticker_image(d: dict) -> bool:
         if v is not None and str(v).strip() != "":
             return str(v).strip() in STICKER_SUBTYPES
     return str(d.get("summary") or "").strip() in ("[动画表情]", "[表情]")
+
+
+def is_command_like(text: str) -> bool:
+    """/, ! or # followed by letters (the design doc's definition)."""
+    return bool(_COMMAND_PREFIX.match(text or ""))
 
 
 def injection_flags(text: str) -> list[str]:
@@ -128,9 +135,10 @@ def perceive(ev: ChatEvent, *, name_of=None) -> Perceived:
     return Perceived(
         text=text,
         reply_to=reply_to,
+        reply_to_bot=bool(reply_to) and bool(ev.self_id) and ev.reply_sender_uid == ev.self_id,
         mentions=mentions,
         mentions_bot=mentions_bot,
-        is_command_like=bool(_COMMAND_PREFIX.match(ev.raw_text)),
+        is_command_like=is_command_like(ev.raw_text),
         injection_flags=injection_flags(text),
         media_kinds=media,
         image_subtypes=image_subtypes,
