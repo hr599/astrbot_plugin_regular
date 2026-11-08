@@ -77,6 +77,11 @@ def _metric_rows(m: dict, source: str) -> str:
             hv = held.get(k)
             txt += "  ·  held out: " + ("n/a" if hv is None else f"{hv:.0%}")
         row(k.replace("_", " "), txt)
+    if m.get("expects"):
+        row("bot-loop breaks (hard gate: 0)", m["bot_loop_breaks"], m["bot_loop_breaks"] == 0)
+        for e, d in sorted(m["expects"].items()):
+            if e != "no_loop":
+                row(f"expect {e}: would speak", f"{d['would_speak']} / {d['moments']} (judged in M2)")
     for t, d in sorted(m["tags"].items()):
         row(f"tag {t}: would speak", f"{d['would_speak']} / {d['moments']} (judged in M2)")
     return "".join(rows)
@@ -88,6 +93,9 @@ def _step_rows(run: Run) -> str:
         m, d, lab = s.msg, s.decision, s.label
         miss = False
         if is_direct(m) and d.action != "reply":
+            miss = True
+        if lab is not None and "no_loop" in lab.get("expect", []) and lab["should"] == "quiet" \
+                and d.action != "quiet":
             miss = True
         if lab is not None and lab["should"] != d.action:
             miss = True

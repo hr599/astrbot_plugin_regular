@@ -90,6 +90,21 @@ def score(run: Run) -> dict[str, Any]:
             d["moments"] += 1
             d["would_speak"] += int(s.decision.action != "quiet")
 
+    # expectations beyond the action (fixture label.expect). Most need compose/voice
+    # (M2) to judge; no_loop is about the action alone, so it's checked now: in a
+    # bot-to-bot exchange the bot must stay quiet.
+    expects: dict[str, dict[str, int]] = {}
+    for s in run.steps:
+        if s.label is None:
+            continue
+        for e in s.label.get("expect", []):
+            d = expects.setdefault(e, {"moments": 0, "would_speak": 0})
+            d["moments"] += 1
+            d["would_speak"] += int(s.decision.action != "quiet")
+    loop_breaks = [s.msg.msg_id for s in run.steps if s.label is not None
+                   and "no_loop" in s.label.get("expect", []) and s.label["should"] == "quiet"
+                   and s.decision.action != "quiet"]
+
     return {
         "policy": run.policy,
         "moments": len(people),
@@ -106,8 +121,12 @@ def score(run: Run) -> dict[str, Any]:
         # held-out labels, never used for tuning; None when there are none yet
         "held_out": ({"labeled": len(held), **_label_stats(held)} if held else None),
         "tags": tags,
+        "expects": expects,
+        "bot_loop_breaks": len(loop_breaks),
+        "bot_loop_break_ids": loop_breaks[:20],
         "gates": {
             "explicit_never_missed": len(missed) == 0,
+            "no_bot_loop": len(loop_breaks) == 0,
             "heavy_crisis_argument": "pending M2 (judged on what it says)",
         },
     }
@@ -140,11 +159,12 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
 def merge(runs: list[Run]) -> dict[str, Any]:
     """Totals across recordings (labels and moments add up; ratios recomputed)."""
     tot = {"moments": 0, "pokes": 0, "labeled": 0, "would_speak": 0, "explicit": 0,
-           "explicit_missed": 0}
+           "explicit_missed": 0, "bot_loop_breaks": 0}
     for r in runs:
         for k in tot:
             tot[k] += r.metrics[k]
     tot["bot_share"] = _ratio(tot["would_speak"], tot["moments"] + tot["would_speak"])
-    tot["gates"] = {"explicit_never_missed": tot["explicit_missed"] == 0}
+    tot["gates"] = {"explicit_never_missed": tot["explicit_missed"] == 0,
+                    "no_bot_loop": tot["bot_loop_breaks"] == 0}
     tot["params"] = runs[0].params if runs else {}
     return tot
