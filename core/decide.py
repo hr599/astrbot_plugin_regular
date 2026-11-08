@@ -1,0 +1,105 @@
+"""Decide: should the bot stay quiet, react, or reply to this moment?
+
+M1 ships the *baseline* policy only. It is deliberately simple so every M2
+version has something honest to beat on the bench:
+
+- an explicit address (@ the bot, quoting a bot message, poking the bot) -> reply
+- a name address (阿灯 / 灯灯, or 灯 used as a vocative) -> reply
+- everything else -> quiet
+
+No model calls, no time-of-day rhythm yet. `now` is passed in (never read from
+the system clock) so the bench can replay on a fake clock and get the same
+answer the live bot would have given.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+POLICY_VERSION = "m1-baseline"
+
+DEFAULT_ALIASES = ("阿灯", "灯灯", "灯")
+
+# "灯" alone is an everyday word (开灯, 灯光, 路灯). Count it only as a vocative:
+# at the very start or right after a separator, followed by punctuation, a space,
+# 你 or the end. 阿灯 / 灯灯 count anywhere.
+_SEP = r"[\s，,。.！!？?：:~～…]"
+
+
+@dataclass
+class Msg:
+    """One moment, as decide and the bench see it. Built from a live event, a
+    stored row, or a fixture line, so all three take the same path."""
+
+    msg_id: str
+    ts: int
+    sender: str  # stable per-person key (person id or a fixture name)
+    text: str  # rendered text, media as placeholders
+    kind: str = "message"  # message | poke
+    mentions_bot: bool = False
+    reply_to: str | None = None
+    reply_to_bot: bool = False
+    poke_bot: bool = False
+    is_bot: bool = False
+    media: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Decision:
+    action: str  # quiet | react | reply
+    addressed: float  # 0..1, how clearly this is meant for the bot
+    address_kind: str  # explicit | name | none
+    reasons: dict[str, Any] = field(default_factory=dict)
+    policy: str = POLICY_VERSION
+
+
+def name_addressed(text: str, aliases: tuple[str, ...] = DEFAULT_ALIASES) -> bool:
+    for a in aliases:
+        if not a:
+            continue
+        if len(a) >= 2:
+            if a in text:
+                return True
+        else:
+            pat = rf"(?:^|{_SEP}){re.escape(a)}(?={_SEP}|你|$)"
+            if re.search(pat, text.strip()):
+                return True
+    return False
+
+
+def addressed(m: Msg, aliases: tuple[str, ...] = DEFAULT_ALIASES) -> tuple[float, str, list[str]]:
+    why = []
+    if m.mentions_bot:
+        why.append("at_bot")
+    if m.reply_to_bot:
+        why.append("quote_of_bot")
+    if m.poke_bot:
+        why.append("poke_bot")
+    if why:
+        return 1.0, "explicit", why
+    if name_addressed(m.text, aliases):
+        return 0.8, "name", ["name"]
+    return 0.0, "none", []
+
+
+def decide(
+    m: Msg,
+    context: list[Msg],
+    now: int,
+    *,
+    aliases: tuple[str, ...] = DEFAULT_ALIASES,
+    threshold: float = 0.75,
+) -> Decision:
+    """`context` = recent messages before `m`, oldest first (unused by the
+    baseline; M2 policies read it). `now` = the clock the caller supplies."""
+    if m.is_bot:
+        return Decision("quiet", 0.0, "none", {"rule": "own_message"})
+    score, kind, why = addressed(m, aliases)
+    action = "reply" if score >= threshold else "quiet"
+    return Decision(
+        action, score, kind,
+        {"rule": "addressed" if action == "reply" else "not_addressed", "signals": why,
+         "context_len": len(context), "now": now},
+    )

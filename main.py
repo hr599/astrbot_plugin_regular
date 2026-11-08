@@ -17,21 +17,24 @@ from astrbot.api.star import Context, Star, StarTools, register
 from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.outbound import reply_admin_dm
+from .bench.commands import bench_command, latest_summary
 from .core.admin import AdminCommands
+from .core.decide import DEFAULT_ALIASES
 from .core.gate import GateConfig
+from .core.labeling import Labeler
 from .core.pipeline import HARNESS_VERSION, Pipeline
 from .services.debug import RawDumper, build_bundle
 from .services.maintenance import Janitor
 from .services.store import Store
 
 PLUGIN_NAME = "astrbot_plugin_regular"
-VERSION = "v0.1.0"
+VERSION = "v0.2.0"
 # Above every normal plugin handler; below AstrBot's own empty-mention
 # listener (maxsize - 1), which SETUP.md tells you to turn off.
 PRIORITY = 10**9
 
 
-@register(PLUGIN_NAME, "hr599", "群里的老熟人（M0：只看不说）", VERSION)
+@register(PLUGIN_NAME, "hr599", "群里的老熟人（M1：只看不说，记录它本会怎么做）", VERSION)
 class Regular(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -45,8 +48,15 @@ class Regular(Star):
             keep_days=int(config.get("raw_dump_keep_days", 3) or 3),
         )
         self.gate_cfg = GateConfig(group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()})
-        self.admin = AdminCommands(self._status, self._debug_bundle, self._set_dump)
-        self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin)
+        self.aliases = tuple(
+            str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
+        ) or DEFAULT_ALIASES
+        self.admin = AdminCommands(
+            self._status, self._debug_bundle, self._set_dump,
+            labeler=Labeler(self.store, aliases=self.aliases),
+            bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases),
+        )
+        self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
         self._refresh_opt_outs()
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
@@ -103,7 +113,7 @@ class Regular(Star):
             "cleanup": "running hourly" if self.janitor.running else "NOT running",
             "version": VERSION,
             "harness": HARNESS_VERSION,
-            "mode": "M0 observe-only (never speaks)",
+            "mode": "observe-only (never speaks); decide runs in shadow",
             "uptime_min": (int(time.time()) - self.started) // 60,
             "groups_watched": len(self.gate_cfg.group_ids),
             "raw_dump": "on" if self.dumper.enabled else "off",
@@ -118,6 +128,7 @@ class Regular(Star):
             status=self._status(),
             traces=traces,
             raw_events=self.dumper.tail(300),
+            bench=latest_summary(self.data_dir),
         )
         return str(path)
 

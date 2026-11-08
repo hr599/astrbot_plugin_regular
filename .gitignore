@@ -213,3 +213,6 @@ data/
 *.db-shm
 raw-*.jsonl
 regular-debug-*.zip
+
+# bench CLI default output
+bench-out/

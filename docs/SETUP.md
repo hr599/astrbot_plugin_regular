@@ -75,6 +75,63 @@ recalls; how a sticker differs from a photo; whether self-messages are reported.
 Two more checks need the speaking path and come with M2: sending reactions/pokes
 via `call_action`, and the bot DMing you.
 
+## M1: labels and the bench
+
+The bot still never speaks. What's new: every trace now records what it *would*
+have done (`shadow` in traces, policy `m1-baseline`), and you can grade that.
+
+**Labeling (from your DM).** Send `/reg label`. The bot shows one logged moment
+(marked →) with a few messages of context and asks what a regular would do:
+
+| Reply | Meaning |
+|---|---|
+| `/reg label 1` | meant for 阿灯, it should reply |
+| `/reg label 2` | meant for 阿灯, a reaction is enough |
+| `/reg label 3` | not meant for it, but a regular would chime in |
+| `/reg label 4` | not meant for it, a reaction at most |
+| `/reg label 5` | not meant for it, stay quiet |
+| `/reg label s` | skip |
+
+Each answer shows the next one. Sampling leans toward moments that might be for
+the bot, questions and quotes, so a few dozen labels go a long way. About 200
+is the design doc's target for the addressed-to-bot score; start with 30–50.
+
+**Running the bench.** Send `/reg bench`. It replays three things through the
+same decide code the live bot uses, on a fake clock (each moment is decided at
+the time it happened):
+
+- everything currently logged, with your labels;
+- any recordings you saved with `/reg bench save`;
+- the synthetic fixtures that ship in `bench/fixtures/`.
+
+It replies with a short score summary and the path to an HTML trace viewer in
+`bench/runs/` (open it locally; it contains real messages, so don't share it).
+Tick "only misses and disagreements" to see just what it got wrong.
+`/reg debug` now includes the latest bench numbers (numbers only) for me.
+
+You can also run it from a terminal in the plugin folder:
+`python -m bench --db <path to regular.db>`; without `--db` it runs the fixtures only.
+
+**Saving a recording.** `/reg bench save [name]` freezes the last 7 days of logs
+plus your labels into `bench/recordings/<name>.json`. Saved recordings are
+**not** cleaned up by the 30-day retention (that's the point: a fixed test set),
+and they contain real messages. The design doc asks for everyone's OK before
+recording a week of the group; that's your call with your friends.
+
+**What the scores mean (baseline).**
+- *explicit missed* must be 0: every @, quote of a bot message and poke gets an answer. Hard gate.
+- *addressed precision / recall*: of the moments you said were for 阿灯, how many it spotted, and how often it thought something was for it when it wasn't.
+- *action agreement*: how often its quiet/react/reply matches your label.
+- *bot share*: what fraction of the chat would be 阿灯; target under about 10%.
+
+The baseline only answers explicit addresses and its name. It never reacts and
+never chimes in on its own, so expect it to miss implied addresses and every
+"a regular would chime in" moment. That's the bar M2 has to beat.
+
+**Name aliases.** The plugin config has `bot_aliases` (default 阿灯 / 灯灯 / 灯).
+Two-character names count anywhere; a single 灯 only counts when it's used as a
+name (灯，你觉得呢), not in 开灯 or 灯光.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`
@@ -82,6 +139,8 @@ via `call_action`, and the bot DMing you.
 - `regular.db`: transcripts and traces (retention: `transcript_retention_days`, default 30)
 - `raw/`: raw event dumps while `raw_dump` is on
 - `debug/`: bundles from `/reg debug`
+- `bench/runs/`: bench reports (HTML trace viewer + numbers)
+- `bench/recordings/`: recordings you saved; not subject to retention
 
 None of this is ever committed; `.gitignore` covers it.
 
