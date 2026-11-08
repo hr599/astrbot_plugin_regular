@@ -624,6 +624,31 @@ class BenchTests(unittest.TestCase):
                 self.assertEqual(pick(dm_live)[k], pick(cli)[k], k)
             self.assertEqual(cli["totals"]["params"]["aliases"], ["小灯泡"])
 
+    # PR #10 review: the CLI tags other bots from the same config as the plugin and /reg bench
+    def test_cli_reads_other_bot_ids(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            data = root / "data" / "plugin_data" / "astrbot_plugin_regular"
+            data.mkdir(parents=True)
+            (root / "data" / "config").mkdir(parents=True)
+            (root / "data" / "config" / "astrbot_plugin_regular_config.json").write_text(
+                json.dumps({"other_bot_ids": ["70007"]}), encoding="utf-8")
+            st = Store(data / "regular.db")
+            p = Pipeline(st, GateConfig(group_ids={GROUP}, bot_uids={"70007"}))
+            p.handle(ev(group_msg([{"type": "at", "data": {"qq": BOT}}, {"type": "text", "data": {"text": " 签到"}}],
+                                  uid="70007", mid=1)))
+            bench_command(st, data, [], bot_uids={"70007"})
+            st.close()
+            dm_live = json.loads(sorted((data / "bench" / "runs").glob("*.json"))[-1].read_text(encoding="utf-8"))
+            cli_out = root / "cli"
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                bench_main(["--db", str(data / "regular.db"), "--out", str(cli_out)])
+            self.assertIn("other bots (plugin config): 1", buf.getvalue())
+            cli = json.loads(next(cli_out.glob("*.json")).read_text(encoding="utf-8"))
+            pick = lambda d: [r["metrics"] for r in d["runs"] if r["source"] == "store"][0]
+            self.assertEqual(pick(dm_live)["explicit"], 0)  # another bot's @ isn't a direct address
+            self.assertEqual(pick(cli)["explicit"], pick(dm_live)["explicit"])
+
     def test_poke_traces_join_recording(self):
         s = Store(":memory:")
         p = Pipeline(s, GateConfig(group_ids={GROUP}))

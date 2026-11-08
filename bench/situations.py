@@ -43,7 +43,8 @@ class Recording:
 
 # ---- from the live store ------------------------------------------------------
 def from_store(store, scope_id: str, *, since_ts: int = 0, until_ts: int | None = None,
-               name: str = "live") -> Recording:
+               name: str = "live", bot_uids=frozenset()) -> Recording:
+    """bot_uids: other bots in the group (config other_bot_ids), tagged from_bot."""
     rows = store.messages_in(scope_id, since_ts, until_ts)
     msgs: list[Msg] = []
     for r in rows:
@@ -53,7 +54,7 @@ def from_store(store, scope_id: str, *, since_ts: int = 0, until_ts: int | None 
             text="" if r["recalled"] else r["text"],
             mentions_bot="bot" in mentions, reply_to=r["reply_to"],
             reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
-            is_bot=bool(r["is_bot"]),
+            is_bot=bool(r["is_bot"]), from_bot=str(r["sender_uid"]) in bot_uids,
         ))
     msgs += _pokes_from_traces(store, scope_id, since_ts, until_ts)
     msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))
@@ -103,6 +104,7 @@ def load_fixture(path: Path) -> Recording:
     """One JSON object per line:
     {"id": "m1", "t": 0, "from": "小王", "text": "...",
      "at_bot": false, "quote": "m0", "poke_bot": false, "bot": false, "from_bot": false,
+     "media_text": "text inside an image",
      "label": {"addressed": false, "should": "quiet", "tags": ["heavy"]}}
     `t` is seconds from the fixture's start; the fake clock starts at a fixed
     Saturday 21:00 UTC+8 so time-of-day policies get a stable evening.
@@ -135,6 +137,9 @@ def load_fixture(path: Path) -> Recording:
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),
             is_bot=bool(d.get("bot")), from_bot=bool(d.get("from_bot")),
             scene=str(d.get("scene", "")),
+            # text inside an image (what M2's image reader would see); it reaches the policy
+            # and later context like any other group content, so injection scenes are real
+            media=[f"图片文字：{d['media_text']}"] if d.get("media_text") else [],
         ))
         if "label" in d:
             lab = dict(d["label"])

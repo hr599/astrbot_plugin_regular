@@ -24,6 +24,9 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
     share = "n/a" if m["bot_share"] is None else f"{m['bot_share']:.1%}"
     s = (f"[{name}] {m['moments']} 条 · 戳 {m['pokes']} · 会说话 {m['would_speak']} 次 ({share})\n"
          f"  明确叫它（@/引用/戳）{m['explicit']} 次，漏回 {gate}")
+    if m.get("expects"):
+        loop = "✓" if m["bot_loop_breaks"] == 0 else f"✗ {m['bot_loop_breaks']} 次"
+        s += f"\n  机器人互刷不接话 {loop}；其余门槛（私信、站队、泄露…）等 M2 判"
     if m["labeled"]:
         s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}）：判断对象 准 {_pct(m['addressed_precision'])} / "
               f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}")
@@ -34,7 +37,8 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
 
 
 def bench_command(store, data_dir: Path, args: list[str], *,
-                  aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None) -> str:
+                  aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None,
+                  bot_uids=frozenset()) -> str:
     """group_ids: the watched groups. Saving uses only those (an old group left in
     the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
@@ -49,7 +53,8 @@ def bench_command(store, data_dir: Path, args: list[str], *,
         lines = []
         for sc in watched:
             gid = sc.rsplit(":", 1)[-1]
-            rec = from_store(store, sc, since_ts=since, name=name if len(watched) == 1 else f"{name}-{gid}")
+            rec = from_store(store, sc, since_ts=since, name=name if len(watched) == 1 else f"{name}-{gid}",
+                             bot_uids=bot_uids)
             if not any(m.kind == "message" for m in rec.messages):
                 lines.append(f"群 {gid}：最近 {SAVE_DAYS} 天没有记录，没存。")
                 continue
@@ -62,7 +67,8 @@ def bench_command(store, data_dir: Path, args: list[str], *,
     recs: list[Recording] = []
     for sc in watched:
         gid = sc.rsplit(":", 1)[-1]
-        recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}"))
+        recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}",
+                               bot_uids=bot_uids))
     recs += load_saved(bench_dir / "recordings")
     recs += load_fixtures()
     runs = [replay(r, aliases=aliases) for r in recs if r.messages]
@@ -83,7 +89,8 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
-            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags")
+            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags",
+            "expects", "bot_loop_breaks")
     return {
         "file": runs[-1].name,
         "totals": d["totals"],

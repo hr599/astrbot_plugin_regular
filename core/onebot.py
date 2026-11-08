@@ -107,6 +107,7 @@ def parse_onebot(
         extra = {}
         if name == "emoji_like":
             extra["likes"] = raw.get("likes")
+            extra["is_add"] = raw.get("is_add", True) is not False  # LLBot sends is_add; removals are False
         if name in ("group_recall", "friend_recall"):
             extra["operator_id"] = _s(raw.get("operator_id"))
         return ChatEvent(

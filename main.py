@@ -47,7 +47,10 @@ class Regular(Star):
             enabled=bool(config.get("raw_dump", False)),
             keep_days=int(config.get("raw_dump_keep_days", 3) or 3),
         )
-        self.gate_cfg = GateConfig(group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()})
+        self.gate_cfg = GateConfig(
+            group_ids={str(g).strip() for g in config.get("group_ids", []) if str(g).strip()},
+            bot_uids={str(b).strip() for b in config.get("other_bot_ids", []) if str(b).strip()},
+        )
         self.aliases = tuple(
             str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
         ) or DEFAULT_ALIASES
@@ -56,7 +59,8 @@ class Regular(Star):
             labeler=Labeler(self.store, aliases=self.aliases,
                             scopes=lambda: self.store.group_scopes(self.gate_cfg.group_ids)),
             bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases,
-                                             group_ids=self.gate_cfg.group_ids),
+                                             group_ids=self.gate_cfg.group_ids,
+                                             bot_uids=self.gate_cfg.bot_uids),
         )
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
         self._refresh_opt_outs()
