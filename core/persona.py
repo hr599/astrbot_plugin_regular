@@ -41,11 +41,24 @@ class Persona:
 
     @property
     def protected(self) -> list[str]:
-        """The instructions, minus the lines 阿灯 is meant to say: quoted example
-        phrases ("…", “…”) and the style-anchor list. Saying 是AI 屏幕后面没人 不过
-        这句是真心的 word for word is the honest answer, not a leak (PR #24 review);
-        the prose around it is what must never be recited."""
-        return [_strip_examples(self.core), _strip_examples(self.guardrails)]
+        """The full instructions: the leak check looks for 15+ character runs copied
+        from these."""
+        return [self.core, self.guardrails]
+
+    @property
+    def examples(self) -> list[str]:
+        """The lines 阿灯 is meant to say: quoted example phrases ("…", “…”) and the
+        style-anchor list. A copied run that lies wholly inside one of these isn't a
+        leak (saying 是AI 屏幕后面没人 不过这句是真心的 word for word is the honest
+        answer, PR #24 review); a run that reaches into the instruction around it
+        still is (PR #25 review)."""
+        out: list[str] = []
+        for text in (self.core, self.guardrails):
+            m = re.search(r"参考语气.*?(?=\n## |\Z)", text, flags=re.S)
+            if m:
+                out += [x.strip() for x in re.findall(r"^\s*[-*]\s*(.+)$", m.group(0), re.M)]
+            out += [q[1:-1] for q in _QUOTED.findall(text)]
+        return [x for x in out if x]
 
     @property
     def canaries(self) -> list[str]:
@@ -59,13 +72,6 @@ class Persona:
 
 
 _QUOTED = re.compile(r'"[^"\n]*"|“[^”\n]*”|「[^」\n]*」')
-
-
-def _strip_examples(text: str) -> str:
-    # drop the style-anchor list (the "参考语气" section up to the next heading)
-    text = re.sub(r"参考语气.*?(?=\n## )", "\n", text, flags=re.S)
-    # quoted example phrases become a break, so no shingle spans across one
-    return _QUOTED.sub("\n", text)
 
 
 def canary_for(data_dir: Path) -> str:
