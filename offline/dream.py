@@ -183,7 +183,10 @@ def check_sensitive(op: Op, ctx: Ctx):
 
 
 def check_computed(op: Op, ctx: Ctx):
-    if op.kind == "add" and op.type in ("norm", "rapport"):
+    # any op: the dreamer neither writes nor rewrites statistics (PR #11 review: revise slipped
+    # past). For merge, the sources count too.
+    types = {op.type} | {ctx.claim(i)["type"] for i in op.merge_ids if ctx.claim(i)}
+    if types & {"norm", "rapport"}:
         return Verdict("computed", "group norms and rapport come from transcript statistics, not the dreamer")
     return None
 
@@ -375,6 +378,7 @@ def _insert_claim(ctx: Ctx, op: Op, status: str, run_id: int, expires: int | Non
 def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
     """Review, then apply in one transaction. Returns the run summary."""
     ctx.pending = []  # batch state is per apply() call
+    ctx._msgs.clear()  # and so is the message cache: recalls/opt-outs since the last batch count
     outcome: Outcome = review(ops, CHECKS, ctx)
     db = ctx.store.db
     db.execute("BEGIN")

@@ -366,6 +366,31 @@ class DreamTest(unittest.TestCase):
                      Op("reinforce", claim_id=cid, evidence=[self.ev(h), self.ev(b)])], self.ctx())
         self.assertEqual([r[2].split(":")[0] for r in res["rejected"]], ["humans_only"])
 
+    # ---------------------------------------------------------------- PR #11 review, round 4
+    def test_reused_ctx_sees_recalls_and_opt_outs(self):
+        ctx = self.ctx()
+        m = self.say("alice", "我在学日语，还养了猫")
+        apply([self.add("self_disclosure", "在学日语", [self.ev(m, "我在学日语")])], ctx)
+        self.store.recall(m)
+        res = apply([self.add("self_disclosure", "养了猫", [Evidence(m, "还养了猫")])], ctx)
+        self.assertEqual(res["applied"], 0)
+        n = self.say("bob", "我在学法语，还会弹琴")
+        apply([self.add("self_disclosure", "在学法语", [self.ev(n, "我在学法语")], subject="bob")], ctx)
+        self.store.db.execute("UPDATE people SET opted_out=1 WHERE person_id=?", (self.p["bob"],))
+        res = apply([self.add("self_disclosure", "会弹琴", [self.ev(n, "还会弹琴")], subject="bob")], ctx)
+        self.assertEqual(res["applied"], 0)
+
+    def test_computed_claims_cant_be_rewritten_by_the_dreamer(self):
+        self.store.db.execute(
+            """INSERT INTO claims (claim_id, scope_id, type, text, status, source, created, last_evidence)
+               VALUES (50, ?, 'norm', '大家很少发长消息', 'validated', 'computed', 0, 0)""", (SCOPE,))
+        m = self.say("alice", "我们群其实很爱发长消息")
+        for op in (Op("revise", claim_id=50, text="大家爱发长消息", evidence=[self.ev(m)], contra=[self.ev(m)]),
+                   Op("retire", claim_id=50, contra=[self.ev(m)]),
+                   Op("reinforce", claim_id=50, evidence=[self.ev(m)])):
+            with self.subTest(kind=op.kind):
+                self.assertEqual(self.first_fail(op).check, "computed")
+
     # ---------------------------------------------------------------- apply / revert
     def claims(self):
         return [dict(r) for r in self.store.db.execute(
