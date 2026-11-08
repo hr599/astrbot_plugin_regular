@@ -70,6 +70,7 @@ class Store:
         self.path = str(path)
         self.db = sqlite3.connect(self.path, isolation_level=None, check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        self.cache_gen = 0  # bumped by forget_person; in-flight model calls check it before caching
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self._migrate()
@@ -524,8 +525,10 @@ class Store:
                 db.execute("DELETE FROM claims WHERE claim_id=?", (cid,))
             # audit trails that could restore or show them
             runs = self._clear_audits(lambda blob: _mentions(blob, pid, mset, gone))
-            # cached model answers can quote anyone and aren't attributed: drop them all
+            # cached model answers can quote anyone and aren't attributed: drop them all,
+            # and void any call still in flight from writing its answer back (#20)
             db.execute("DELETE FROM llm_cache")
+            self.cache_gen += 1
             # traces that name them as a reactor or as the one answered (task D signals)
             db.execute("""DELETE FROM traces WHERE json_valid(reasons) AND
                           (json_extract(reasons, '$.actor')=? OR json_extract(reasons, '$.signals.answers')=?)""",

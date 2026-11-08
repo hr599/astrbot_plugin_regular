@@ -27,6 +27,7 @@ from typing import Any, Awaitable, Callable
 from .budget import Budget, BudgetExceeded, Usage, estimate_tokens  # noqa: F401  (re-exported)
 
 ROLES = ("decide", "reply", "caption", "dream", "judge")
+BUDGET_KEYS = {"max_tokens", "max_completion_tokens", "max_output_tokens", "n", "stream", "model", "messages"}
 
 
 @dataclass
@@ -67,30 +68,41 @@ class ModelClient:
                        extra: dict[str, Any] | None = None) -> Result:
         pid = self.provider(role)
         model = self.model_of(pid)
-        params: dict[str, Any] = {"max_tokens": max_tokens, **(extra or {})}
+        bad = BUDGET_KEYS & set(extra or {})
+        if bad:  # the limit the budget checks must be the limit that's sent (#20)
+            raise ValueError(f"extra can't set {sorted(bad)}: pass max_tokens instead")
+        # one set of params: checked, sent and cached alike
+        params: dict[str, Any] = {"max_tokens": int(max_tokens)}
         if temperature is not None:
             params["temperature"] = temperature
+        if extra:
+            params["extra_body"] = dict(extra)
         now = int(self.clock())
         key = self.cache_key(model, system, prompt, params) if cache else None
+        store = self.budget.store
         if key:
-            hit = self.budget.store.cache_get(key)
+            hit = store.cache_get(key)
             if hit is not None:
                 u = Usage(**json.loads(hit["usage"])) if hit["usage"] else Usage()
                 self.budget.record(role=role, model=model, usage=u, ok=True, latency_ms=0,
                                    cached_response=True, now=now)
                 return Result(hit["text"], model, u, 0.0, True, 0)
-        self.budget.check(model, system + prompt, max_tokens, now)  # raises BudgetExceeded
+        gen = getattr(store, "cache_gen", 0)  # a forget during the call voids its cache write (#20)
+        bucket, est = self.budget.reserve(model, system + prompt, params["max_tokens"], now)  # BudgetExceeded
         t0 = self.clock()
         try:
-            text, usage = await self.call(pid, system, prompt, params)
-        except Exception:
-            self.budget.record(role=role, model=model, usage=Usage(), ok=False,
-                               latency_ms=int((self.clock() - t0) * 1000), now=now)
-            raise
-        ms = int((self.clock() - t0) * 1000)
-        cost = self.budget.record(role=role, model=model, usage=usage, ok=True, latency_ms=ms, now=now)
-        if key:
-            self.budget.store.cache_put(key, model, text, json.dumps(asdict(usage)), now)
+            try:
+                text, usage = await self.call(pid, system, prompt, params)
+            except Exception:
+                self.budget.record(role=role, model=model, usage=Usage(), ok=False,
+                                   latency_ms=int((self.clock() - t0) * 1000), now=now)
+                raise
+            ms = int((self.clock() - t0) * 1000)
+            cost = self.budget.record(role=role, model=model, usage=usage, ok=True, latency_ms=ms, now=now)
+        finally:
+            self.budget.release(bucket, est)  # also on cancellation
+        if key and getattr(store, "cache_gen", 0) == gen:
+            store.cache_put(key, model, text, json.dumps(asdict(usage)), now)
         return Result(text, model, usage, cost, False, ms)
 
 

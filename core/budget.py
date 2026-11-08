@@ -72,10 +72,12 @@ def cost_usd(model: str, usage: Usage, ts: int, prices: dict[str, Any], *, force
                    + usage.output * p["output"]) / 1_000_000
 
 
-def estimate_tokens(text: str) -> int:
-    """Deliberately high: about one token per CJK character, one per 3 other characters."""
-    cjk = sum(1 for ch in text if "　" <= ch <= "鿿" or "＀" <= ch <= "￯")
-    return cjk + (len(text) - cjk) // 3 + 16
+def estimate_tokens(text: str, messages: int = 2) -> int:
+    """An upper bound, not a guess: byte-level BPE tokenizers (DeepSeek's, OpenAI's)
+    never produce more tokens than UTF-8 bytes, so bytes + per-message chat-format
+    overhead can't undercount, whatever the text (CJK, emoji, ...). It runs about
+    2-3x high for Chinese, which at these prices is fractions of a fen (PR #19 review)."""
+    return len(text.encode("utf-8")) + 8 * messages + 8
 
 
 class BudgetExceeded(Exception):
@@ -90,6 +92,7 @@ class Budget:
         self.prices = prices
         self.monthly = monthly
         self.usd_to_cny = usd_to_cny
+        self._pending: dict[str, float] = {}  # bucket -> worst-case estimates of calls in flight
 
     # ---------------------------------------------------------------- money
     def bucket_of(self, model: str) -> str:
@@ -125,17 +128,29 @@ class Budget:
     # ---------------------------------------------------------------- gate
     def check(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None) -> float:
         """Raise BudgetExceeded if this call could take today past the cap.
-        Returns the worst-case estimate (bucket currency)."""
+        Returns the worst-case estimate (bucket currency). Doesn't reserve: see reserve()."""
         now = int(time.time()) if now is None else now
         bucket = self.bucket_of(model)
         cap = self.daily_cap(bucket)
         est = self.to_bucket(cost_usd(model, Usage(input_other=estimate_tokens(prompt_text), output=max_tokens),
                                       now, self.prices, force_peak=True), bucket)
-        spent = self.spent(bucket, now)
+        spent = self.spent(bucket, now) + self._pending.get(bucket, 0.0)
         if cap <= 0 or spent + est > cap:
             raise BudgetExceeded(
-                f"{bucket}: today {spent:.4f} + this call up to {est:.4f} > daily cap {cap:.4f} {self.currency(bucket)}")
+                f"{bucket}: today {spent:.4f} (incl. calls in flight) + this call up to {est:.4f} "
+                f"> daily cap {cap:.4f} {self.currency(bucket)}")
         return est
+
+    def reserve(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None) -> tuple[str, float]:
+        """check() and hold the estimate until release(): calls that overlap can't
+        share the same remaining budget (#20). Synchronous, so atomic under asyncio."""
+        est = self.check(model, prompt_text, max_tokens, now)
+        bucket = self.bucket_of(model)
+        self._pending[bucket] = self._pending.get(bucket, 0.0) + est
+        return bucket, est
+
+    def release(self, bucket: str, est: float) -> None:
+        self._pending[bucket] = max(0.0, self._pending.get(bucket, 0.0) - est)
 
     def record(self, *, role: str, model: str, usage: Usage, ok: bool, latency_ms: int,
                cached_response: bool = False, now: int | None = None) -> float:

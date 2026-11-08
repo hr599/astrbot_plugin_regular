@@ -252,7 +252,10 @@ so it's ready, and lets you test each model once.
 2. In this plugin's settings, put each provider's AstrBot ID under its role:
    `provider_decide`, `provider_reply`, `provider_caption` -> the flash one;
    `provider_dream` -> the v4-pro one; `provider_judge` -> the OpenAI one.
-   A blank role is never called.
+   A blank role is never called. The plugin calls each provider's own
+   OpenAI-compatible client with an exact output limit per call, so providers
+   must be OpenAI-compatible (DeepSeek and OpenAI are), and the provider's
+   "custom extra body" setting is not applied to this plugin's calls.
 3. From your DM: `/reg model test reply` (and the other roles). Each sends one
    tiny prompt and tells you the model, the reply, the time and the cost.
 4. `/reg budget` shows today's and this month's spend against the caps.

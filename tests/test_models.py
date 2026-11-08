@@ -169,34 +169,126 @@ class AdminTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
-    def test_make_call_maps_usage_and_errors(self):
-        from adapter.llm import make_call, make_model_of
-        sent = {}
+    """The final request (what the SDK's create() receives) carries exactly the limit
+    the budget checked (PR #19 review: llm_generate dropped it in AstrBot 4.29.x)."""
 
-        class Resp:
-            def __init__(self, role, text, u):
-                self.role, self.completion_text, self.usage = role, text, u
+    def ctx(self, model="deepseek-flash", custom_extra_body=None, usage=None, client=True):
+        sent = []
+
+        async def create(**kw):
+            sent.append(kw)
+            u = usage or types.SimpleNamespace(prompt_tokens=8, prompt_cache_hit_tokens=3, completion_tokens=1)
+            return types.SimpleNamespace(usage=u, choices=[types.SimpleNamespace(
+                message=types.SimpleNamespace(content="好"))])
+
+        prov = types.SimpleNamespace(
+            get_model=lambda: model, provider_config={"custom_extra_body": custom_extra_body or {}},
+            client=types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
+            if client else None)
 
         class Ctx:
-            async def llm_generate(self, **kw):
-                sent.update(kw)
-                if kw["prompt"] == "boom":
-                    return Resp("err", "rate limited", None)
-                return Resp("assistant", "好", types.SimpleNamespace(input_other=5, input_cached=3, output=1))
-
             def get_provider_by_id(self, pid):
-                return types.SimpleNamespace(get_model=lambda: "deepseek-flash") if pid == "ds" else None
+                return prov if pid == "p" else None
 
-        call = make_call(Ctx())
-        text, u = asyncio.run(call("ds", "", "hi", {"max_tokens": 8}))
+        return Ctx(), sent
+
+    def test_limit_reaches_the_sdk_and_provider_config_cant_raise_it(self):
+        from adapter.llm import make_call
+        ctx, sent = self.ctx(custom_extra_body={"max_tokens": 4096})
+        text, u = asyncio.run(make_call(ctx)("p", "sys", "hi", {"max_tokens": 16, "temperature": 0.2}))
+        self.assertEqual(sent[0]["max_tokens"], 16)
+        self.assertEqual(sent[0]["temperature"], 0.2)
+        self.assertNotIn("extra_body", sent[0])  # the provider's 4096 isn't merged in
+        self.assertEqual(sent[0]["messages"], [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}])
         self.assertEqual((text, u.input_other, u.input_cached, u.output), ("好", 5, 3, 1))
-        self.assertEqual((sent["chat_provider_id"], sent["system_prompt"], sent["max_tokens"]), ("ds", None, 8))
+
+    def test_openai_models_get_max_completion_tokens_and_cached_details(self):
+        from adapter.llm import make_call
+        u = types.SimpleNamespace(prompt_tokens=10, completion_tokens=2,
+                                  prompt_tokens_details=types.SimpleNamespace(cached_tokens=4))
+        ctx, sent = self.ctx(model="gpt-6.1-terra", usage=u)
+        _, usage = asyncio.run(make_call(ctx)("p", "", "hi", {"max_tokens": 16}))
+        self.assertEqual(sent[0]["max_completion_tokens"], 16)
+        self.assertNotIn("max_tokens", sent[0])
+        self.assertEqual((usage.input_other, usage.input_cached), (6, 4))
+
+    def test_no_client_no_call(self):
+        from adapter.llm import make_call, make_model_of
+        ctx, sent = self.ctx(client=False)
         with self.assertRaises(RuntimeError):
-            asyncio.run(call("ds", "", "boom", {}))
-        mo = make_model_of(Ctx(), {"x": "gpt-6.1-terra"})
-        self.assertEqual((mo("ds"), mo("x")), ("deepseek-flash", "gpt-6.1-terra"))
+            asyncio.run(make_call(ctx)("p", "", "hi", {"max_tokens": 16}))
         with self.assertRaises(LookupError):
-            mo("nope")
+            asyncio.run(make_call(ctx)("nope", "", "hi", {"max_tokens": 16}))
+        mo = make_model_of(ctx, {"x": "gpt-6.1-terra"})
+        self.assertEqual((mo("p"), mo("x")), ("deepseek-flash", "gpt-6.1-terra"))
+
+    def test_end_to_end_limit_matches_the_budget_check(self):
+        from adapter.llm import make_call, make_model_of
+        ctx, sent = self.ctx()
+        s = Store(":memory:")
+        b = Budget(s, P, monthly={"deepseek": 50})
+        c = ModelClient(b, providers={"reply": "p"}, model_of=make_model_of(ctx), call=make_call(ctx))
+        asyncio.run(c.generate("reply", prompt="只回复两个字：收到", max_tokens=16))
+        self.assertEqual(sent[0]["max_tokens"], 16)
+        with self.assertRaises(ValueError):  # extra can't override what the budget checked (#20)
+            asyncio.run(c.generate("reply", prompt="x", max_tokens=16, extra={"max_tokens": 32768}))
+        self.assertEqual(len(sent), 1)
+
+
+class FollowUpTests(unittest.TestCase):
+    """Issue #20."""
+
+    def setUp(self):
+        self.s = Store(":memory:")
+        self.b = Budget(self.s, P, monthly={"openai": 30})  # $1/day
+        self.gate = None
+
+        async def call(pid, system, prompt, params):
+            if self.gate is not None:
+                await self.gate.wait()
+            return "ok", Usage(input_other=10, output=params["max_tokens"])
+
+        self.c = ModelClient(self.b, providers={"judge": "gpt"}, model_of=lambda pid: "gpt-6.1-terra",
+                             call=call, clock=lambda: MON_OFF)
+
+    def test_overlapping_calls_cant_share_the_remaining_budget(self):
+        self.s.db.execute("INSERT INTO model_calls (ts, role, model, bucket, cost, currency) VALUES (?,?,?,?,?,?)",
+                          (MON_OFF, "judge", "gpt-6.1-terra", "openai", 1.0 - 0.00015, "USD"))
+
+        async def both():
+            self.gate = asyncio.Event()
+            t1 = asyncio.create_task(self.c.generate("judge", prompt="hi", max_tokens=16))
+            await asyncio.sleep(0)
+            t2 = asyncio.create_task(self.c.generate("judge", prompt="hi", max_tokens=16))
+            await asyncio.sleep(0)
+            self.gate.set()
+            return await asyncio.gather(t1, t2, return_exceptions=True)
+
+        r1, r2 = asyncio.run(both())
+        self.assertEqual(r1.text, "ok")
+        self.assertIsInstance(r2, BudgetExceeded)
+        self.assertEqual(self.b._pending.get("openai", 0), 0)  # released after the call
+
+    def test_input_estimate_is_an_upper_bound(self):
+        from core.budget import estimate_tokens
+        for text in ("你好" * 50, "🙂" * 50, "abc" * 50, "こんにちは🙂中文 mix"):
+            self.assertGreaterEqual(estimate_tokens(text), len(text.encode("utf-8")))
+
+    def test_forget_during_a_call_voids_its_cache_write(self):
+        Pipeline(self.s, GateConfig(group_ids={GROUP})).handle(ev(group_msg("hi", uid=FRIEND, mid=1)))
+
+        async def run():
+            self.gate = asyncio.Event()
+            t = asyncio.create_task(self.c.generate("judge", prompt="hi", max_tokens=16, cache=True))
+            await asyncio.sleep(0)
+            self.s.forget_person("aiocqhttp", FRIEND)  # really erases someone mid-call
+            self.gate.set()
+            await t
+        asyncio.run(run())
+        self.assertEqual(self.s.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 0)
+        self.gate = None
+        asyncio.run(self.c.generate("judge", prompt="hi", max_tokens=16, cache=True))  # new calls cache again
+        self.assertEqual(self.s.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 1)
 
 
 if __name__ == "__main__":
