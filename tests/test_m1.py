@@ -619,6 +619,29 @@ class BenchTests(unittest.TestCase):
         # fixtures (hand-built scenes, not a sample of real chat) get no estimate
         self.assertIsNone(replay(Recording("f", "fixture", msgs, labels)).metrics["implied"])
 
+    def test_implied_rate_uncertainty_and_pokes(self):
+        # PR #22 review: sparse tiers share the pooled sample, so the SE must be the
+        # pooled proportion's, not three "independent" ones; pokes at 阿灯 add replies
+        msgs, labels = [], {}
+        texts = ["阿灯好", "去哪？", "吃了"]  # tiers A, B, C, equal sizes
+        for i in range(60):
+            msgs.append(Msg(f"y{i}", 1000 + i * 10, "a", texts[i % 3]))
+        from bench.splits import is_test
+        dev = [m for m in msgs if not is_test(m.msg_id)]
+        for t in texts:  # two labels per tier: one acts, one doesn't -> every tier borrows the pool
+            ms = [m for m in dev if m.text == t][:2]
+            labels[ms[0].msg_id] = {"addressed": False, "should": "reply"}
+            labels[ms[1].msg_id] = {"addressed": False, "should": "quiet"}
+        imp = replay(Recording("live", "store", msgs, labels)).metrics["implied"]
+        self.assertAlmostEqual(imp["act_rate_unaddressed"], 0.5, places=3)
+        # pooled p=0.5 over 6 labels: sd of the proportion = 0.204; bootstrap lands near it
+        self.assertGreater(imp["act_rate_se"], 0.16)
+        pokes = [Msg(f"p{i}", 5000 + i * 300, "a", "[戳一戳]", kind="poke", poke_bot=True) for i in range(6)]
+        with_pokes = replay(Recording("live", "store", msgs + pokes, labels)).metrics["implied"]
+        # 60 messages at a 50% reply rate = 30 replies (+ 6 for the pokes); pokes add no messages
+        self.assertEqual(imp["reply_share"], round(30 / 90, 3))
+        self.assertEqual(with_pokes["reply_share"], round(36 / 96, 3))
+
     # PR #4 review: CLI must score with the same aliases as the live bot and /reg bench
     def test_cli_and_dm_agree_with_custom_alias(self):
         with tempfile.TemporaryDirectory() as d:

@@ -7,6 +7,7 @@ system clock, so the same recording always gives the same result.
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -186,28 +187,43 @@ def implied_rates(run: Run, lab: list[Step]) -> dict[str, Any] | None:
     pooled = [x for v in by.values() for x in v]
     if not pooled:
         return None
-    reply = react = var = 0.0
-    tiers = {}
-    for k, n in pop.items():
-        got = by.get(k) or []
-        src = got if len(got) >= 5 else pooled  # too few labels in a tier: borrow the pooled rate
-        r_reply = src.count("reply") / len(src)
-        r_react = src.count("react") / len(src)
-        w = n / len(eligible)
-        reply += w * r_reply
-        react += w * r_react
-        act = r_reply + r_react
-        var += w * w * act * (1 - act) / len(src)
-        tiers[k] = {"messages": n, "labels": len(got), "pooled": len(got) < 5,
-                    "act_rate": round(act, 3)}
-    direct = len([s for s in people if is_direct(s.msg)])
+    def estimate(by_tier: dict[str, list[str]]) -> tuple[float, float, dict[str, Any]]:
+        pool = [x for v in by_tier.values() for x in v]
+        rep = rea = 0.0
+        info = {}
+        for k, n in pop.items():
+            got = by_tier.get(k) or []
+            src = got if len(got) >= 5 else pool  # too few labels in a tier: borrow the pooled rate
+            w = n / len(eligible)
+            rr, ra = src.count("reply") / len(src), src.count("react") / len(src)
+            rep += w * rr
+            rea += w * ra
+            info[k] = {"messages": n, "labels": len(got), "pooled": len(got) < 5, "act_rate": round(rr + ra, 3)}
+        return rep, rea, info
+
+    reply, react, tiers = estimate(by)
+    # uncertainty by bootstrap over the labels (resampling within each tier): tiers
+    # that borrow the pooled rate share one sample, which a per-tier formula would
+    # treat as independent and so understate (PR #22 review). Seeded: same input,
+    # same number.
+    rng = random.Random(0)
+    acts = []
+    for _ in range(300):
+        boot = {k: [rng.choice(v) for _ in v] for k, v in by.items()}
+        r1, r2, _ = estimate(boot)
+        acts.append(r1 + r2)
+    mean = sum(acts) / len(acts)
+    se = (sum((x - mean) ** 2 for x in acts) / (len(acts) - 1)) ** 0.5
+    # direct addresses always get a reply: @ / quote messages and pokes at 阿灯 alike
+    # (pokes aren't messages, so they add replies but not to the denominator)
+    direct = len([s for s in run.steps if is_direct(s.msg)])
     n_people = len(people)
-    replies = reply * len(eligible) + direct  # direct addresses always get a reply
+    replies = reply * len(eligible) + direct
     return {
         "reply_share": _ratio(replies, n_people + replies),
         "react_rate": _ratio(react * len(eligible), n_people),
         "act_rate_unaddressed": round(reply + react, 3),
-        "act_rate_se": round(var ** 0.5, 3),
+        "act_rate_se": round(se, 3),
         "labelled_raw_act_rate": _ratio(sum(1 for x in pooled if x != "quiet"), len(pooled)),
         "tiers": tiers,
     }
