@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ._core import DEFAULT_ALIASES
+from ._core import DEFAULT_ALIASES, decide, decide_m2, load_params
 from .report import write_report
 from .runner import merge, replay
 from .situations import Recording, from_store, load_fixtures, load_saved, save
@@ -29,7 +29,7 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
         s += f"\n  机器人互刷不接话 {loop}；其余门槛（私信、站队、泄露…）等 M2 判"
     if m["labeled"]:
         s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}）：判断对象 准 {_pct(m['addressed_precision'])} / "
-              f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}")
+              f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}，平衡准确率 {_pct(m.get('balanced_accuracy'))}")
         imp = m.get("implied")
         if imp:
             s += (f"\n  按你的标注推算（纠正抽样偏差）：阿灯回复约占群消息 {_pct(imp['reply_share'])}，"
@@ -38,13 +38,13 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
                   f"标注样本里是 {_pct(imp['labelled_raw_act_rate'])}）")
         h = m.get("held_out")
         if h:
-            s += f"\n  留出的 {h['labeled']} 条：动作一致 {_pct(h['action_agreement'])}"
+            s += f"\n  留出的 {h['labeled']} 条：动作一致 {_pct(h['action_agreement'])}，平衡准确率 {_pct(h.get('balanced_accuracy'))}"
     return s
 
 
 def bench_command(store, data_dir: Path, args: list[str], *,
                   aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None,
-                  bot_uids=frozenset()) -> str:
+                  bot_uids=frozenset(), on_params_change=None) -> str:
     """group_ids: the watched groups. Saving uses only those (an old group left in
     the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
@@ -70,19 +70,32 @@ def bench_command(store, data_dir: Path, args: list[str], *,
             lines.append("recording 不受 30 天清理影响，含真实聊天内容，只留在本机。")
         return "\n".join(lines)
 
+    tuning = bool(args) and args[0].lower() == "tune"
     recs: list[Recording] = []
     for sc in watched:
         gid = sc.rsplit(":", 1)[-1]
         recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}",
                                bot_uids=bot_uids))
     recs += load_saved(bench_dir / "recordings")
+    if tuning:
+        from .tune import tune_command
+        return tune_command([r for r in recs if r.messages], data_dir, args[1:], aliases=aliases,
+                            on_change=on_params_change)
     recs += load_fixtures()
-    runs = [replay(r, aliases=aliases) for r in recs if r.messages]
+    params = load_params(data_dir)
+    runs = [replay(r, decide_m2, aliases=aliases, params=params) for r in recs if r.messages]
     if not runs:
         return "没有可以重放的内容。"
     totals = merge(runs)
     report = write_report(runs, bench_dir / "runs", totals)
-    lines = [f"规则版本 {runs[0].policy} · 称呼 {' / '.join(aliases)}"] + [summary_line(r.recording.name, r.metrics) for r in runs]
+    tuned = " · 用调过的参数" if (data_dir / "decide_params.json").exists() else ""
+    lines = [f"规则版本 {runs[0].policy}{tuned} · 称呼 {' / '.join(aliases)}"] + [summary_line(r.recording.name, r.metrics) for r in runs]
+    # the M1 baseline on your real recordings, for comparison (one line each)
+    for r in recs:
+        if r.messages and r.labels and r.source != "fixture":
+            b = replay(r, decide, aliases=aliases).metrics
+            lines.append(f"  对照 M1 基线 [{r.name}]：平衡准确率 {_pct(b.get('balanced_accuracy'))}，"
+                         f"动作一致 {_pct(b['action_agreement'])}，会说话 {b['would_speak']} 次")
     lines.append(f"\n报告（本机打开，含聊天原文）：\n{report}")
     return "\n".join(lines)
 
@@ -95,7 +108,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
-            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
+            "action_agreement", "balanced_accuracy", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
     return {
         "file": runs[-1].name,

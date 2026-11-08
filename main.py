@@ -27,12 +27,13 @@ from .core.admin import AdminCommands
 from .core.budget import Budget, load_prices
 from .core.llm import ROLES, AsyncReply, ModelAdmin, ModelClient
 from .core.decide import DEFAULT_ALIASES
+from .core.decide_rules import load_params
 from .core.gate import GateConfig
 from .core.labeling import Labeler
 from .core.outbox import Outbox, SendAdmin, deliver
 from .core.persona import load_persona
 from .core.people_admin import PeopleAdmin
-from .core.pipeline import HARNESS_VERSION, Pipeline
+from .core.pipeline import Pipeline
 from .services.debug import RawDumper, build_bundle
 from .services.maintenance import Janitor
 from .services.store import Store
@@ -88,7 +89,8 @@ class Regular(Star):
                             scopes=lambda: self.store.group_scopes(self.gate_cfg.group_ids)),
             bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases,
                                              group_ids=self.gate_cfg.group_ids,
-                                             bot_uids=self.gate_cfg.bot_uids),
+                                             bot_uids=self.gate_cfg.bot_uids,
+                                             on_params_change=self._reload_params),
             people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
                                save_paused=self._save_paused, forget_files=self._forget_files),
             models=ModelAdmin(self.models, self.budget),
@@ -96,7 +98,8 @@ class Regular(Star):
                              paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
                              scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}"),
         )
-        self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
+        self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases,
+                                 params=load_params(self.data_dir))
         self._refresh_opt_outs()
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
@@ -155,7 +158,7 @@ class Regular(Star):
             "isolation": iso_line,
             "cleanup": "running hourly" if self.janitor.running else "NOT running",
             "version": VERSION,
-            "harness": HARNESS_VERSION,
+            "harness": self.pipeline.harness_version,
             "persona": self.persona.version,
             "mode": "decide runs in shadow; sending: " + self.outbox.mode
                     + (" (only /reg say sends before M2)" if self.outbox.mode != "off" else ""),
@@ -223,6 +226,10 @@ class Regular(Star):
             self.config.save_config()
         except Exception:
             logger.exception("[regular] could not persist send_mode")
+
+    def _reload_params(self) -> None:
+        """/reg bench tune apply|reset: shadow decide picks up the new numbers now."""
+        self.pipeline.params = load_params(self.data_dir)
 
     def _save_paused(self, paused: set[str]) -> None:
         self.config["paused_group_ids"] = sorted(paused)

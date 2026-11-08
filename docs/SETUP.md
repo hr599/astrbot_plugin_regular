@@ -287,6 +287,41 @@ A random canary marker is created once in the plugin's data folder
 15+ characters copied from the persona or guardrails, ever appears in something
 阿灯 is about to send (including `/reg say`), the message is stopped.
 
+## M2a: decide by rules, tuned on your labels
+
+Shadow decide and `/reg bench` now run the M2 rules (policy `m2-rules.1`,
+`core/decide_rules.py`). They still never send anything by themselves. On top of
+the baseline's hard rules (an @, quote or poke always gets a reply; the bot-loop,
+per-bot and @-burst limits), they read:
+
+- **who it's for**: 阿灯's name used to talk to him (`阿灯你…`) vs. about him
+  (`阿灯的…`, `让阿灯…`); a follow-up from the person he just answered; an @ or a
+  quote aimed at someone else;
+- **whether to chime in**: how lively the message is, his interests, a question in
+  the air, laughter or a photo (lean to a reaction), times his daily rhythm
+  (asleep: never; in class: less);
+- **when to stay out**: an argument, a serious moment, if he spoke in the last two
+  messages, or if he already has about a fifth of the recent messages. A sincere
+  crisis message always gets a caring reply.
+
+The numbers live in `harness/rules/decide.json`. Shadow traces keep the baseline's
+answer as `baseline`, and `/reg bench` prints one comparison line per real
+recording.
+
+**Tuning.** `/reg bench tune` (admin DM) searches the numbers on your dev labels and
+replies with numbers only: balanced accuracy (the average of how well it catches
+quiet, react and reply, so "always quiet" can't score well) before and after, the
+held-out labels' score, which never steers the search, and the reply share against
+what your labels imply. It needs at least 60 dev labels, and the synthetic fixtures
+are never tuned on. If the held-out score drops, it says so; don't apply then.
+`/reg bench tune apply` writes the changed numbers to `decide_params.json` in the
+data folder, which overrides the harness file and takes effect at once.
+`/reg bench tune reset` removes it. `python -m bench --db …` uses the same numbers;
+add `--baseline` to replay the M1 baseline instead.
+
+Not yet: live decide doesn't wait for a speaker's burst to end (the bench does);
+that comes with live replies in M2c.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`

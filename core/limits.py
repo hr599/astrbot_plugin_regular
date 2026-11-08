@@ -36,6 +36,8 @@ BOT_DAILY_CAP = 3
 SPAM_WINDOW_S = 120
 SPAM_MAX = 4
 UTC8 = 8 * 3600
+ROOM_WINDOW = 30  # messages the share-of-recent-messages cap looks at
+SERIOUS_QUIET_S = 1800  # serious mode lasts until the thread is quiet for 30 minutes
 
 
 def day_of(ts: int) -> int:
@@ -92,6 +94,14 @@ class LimitState:
         self.day: int | None = None
         self.counts: dict[str, int] = {}  # 阿灯's replies per other bot, on self.day
         self.prev = None
+        # the room, for M2's decide rules (also fed one moment at a time)
+        self.recent: deque = deque(maxlen=ROOM_WINDOW)  # (ts, is_bot) of the last messages
+        self.last_bot_ts: int | None = None
+        self.bot_answered: str | None = None  # the person 阿灯 last spoke right after
+        self.others_since_bot: set[str] = set()  # people who spoke since 阿灯 did
+        self.humans: deque = deque(maxlen=3)  # (ts, sender) of the last human messages
+        self.heat, self.heat_ts = 0.0, None
+        self.serious_until = 0
 
     def observe(self, m) -> None:
         d = day_of(m.ts)
@@ -107,7 +117,49 @@ class LimitState:
             q.append(m.ts)
             while q and m.ts - q[0] > SPAM_WINDOW_S:
                 q.popleft()
+        if m.kind == "message":
+            self.recent.append((m.ts, bool(m.is_bot)))
+        if m.is_bot:
+            self.last_bot_ts = m.ts
+            self.bot_answered = self.prev.sender if self.prev is not None and is_human(self.prev) else None
+            self.others_since_bot = set()
+        elif is_human(m):
+            if self.bot_answered is not None and m.sender != self.bot_answered:
+                self.others_since_bot.add(m.sender)
+            self._room_signals(m)
         self.prev = m
+
+    def _room_signals(self, m) -> None:
+        from .signals import HEAT_CUE, RUDE, heat_step, serious_cue  # (signals doesn't import limits)
+        text = m.text or ""
+        h = self.humans
+        back_and_forth = (len(h) >= 2 and h[-1][1] != m.sender and h[-2][1] == m.sender
+                          and m.ts - h[-2][0] <= 120)
+        self.heat = heat_step(self.heat, m.ts - (self.heat_ts or m.ts), back_and_forth=back_and_forth,
+                              insult=bool(RUDE.search(text)), heat_cue=bool(HEAT_CUE.search(text)))
+        self.heat_ts = m.ts
+        if serious_cue(text):
+            self.serious_until = m.ts + SERIOUS_QUIET_S
+        elif self.serious_until > m.ts:
+            self.serious_until = m.ts + SERIOUS_QUIET_S  # lasts until the thread is quiet for 30 min
+        h.append((m.ts, m.sender))
+
+    # ---- room readings (M2 decide) ----
+    def heat_now(self, now: int) -> float:
+        from .signals import decay
+        return decay(self.heat, now - (self.heat_ts or now)) if self.heat_ts else 0.0
+
+    def bot_share(self) -> float:
+        return sum(1 for _, b in self.recent if b) / len(self.recent) if self.recent else 0.0
+
+    def bot_spoke_last(self, k: int = 2) -> bool:
+        """Did 阿灯 send one of the last k messages? (never twice in a row unprompted)"""
+        return any(b for _, b in list(self.recent)[-k:])
+
+    def follow_up(self, sender: str, now: int, window: int) -> bool:
+        """The person 阿灯 was just talking to, before anyone else joins in."""
+        return (self.bot_answered == sender and self.last_bot_ts is not None
+                and now - self.last_bot_ts <= window and not self.others_since_bot)
 
     def burst(self, sender: str, now: int) -> int:
         return sum(1 for t in self.directs.get(sender, ()) if now - t <= SPAM_WINDOW_S)
