@@ -122,12 +122,15 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(out.outcome, "send")
 
     def test_prompt_stand_ins_never_go_out(self):
-        for bad in ("A说得对", "问问C", "@某人1 你定", "某人2也想吃", "@B 你来", "B你也来"):
+        for bad in ("A说得对", "问问C", "@某人1 你定", "某人2也想吃", "@B 你来", "B你也来",
+                    "问一下A", "A同意了", "跟 C 说一声", "A和B都去"):  # PR #30 review: any phrasing
             with self.subTest(bad=bad):
-                self.assertTrue(cm.placeholders(bad))
-        for ok in ("B站那个视频", "A股又跌了", "C语言作业", "PPT改完了", "GPU借到了", "AI写的吧", "我投烤冷面"):
+                self.assertTrue(cm.placeholders(bad, {"A", "B", "C"}))
+        for ok in ("B站那个视频", "A股又跌了", "C语言作业", "C位出道", "A4纸", "PPT改完了", "GPU借到了",
+                   "AI写的吧", "我投烤冷面", "OK", "plan不变"):
             with self.subTest(ok=ok):
-                self.assertFalse(cm.placeholders(ok))
+                self.assertFalse(cm.placeholders(ok, {"A", "B", "C"}))
+        self.assertFalse(cm.placeholders("D同意了", {"A", "B"}))  # only letters the prompt used
         out, seen = self.run_c(["A说得对 就烤冷面", "就烤冷面"])
         self.assertEqual((out.outcome, out.attempts), ("send", 2))
         self.assertIn("placeholder", out.hits)

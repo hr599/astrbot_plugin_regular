@@ -27,7 +27,7 @@ from typing import Any
 
 from .budget import BudgetExceeded
 from .decide import Msg
-from .decide_model import clock, render_chat
+from .decide_model import clock, render_chat, speaker_letters
 from .voice import check
 
 VERSION = "m2c-compose.1"
@@ -66,14 +66,22 @@ NOTES = {
     "placeholder": "别用 A、B、某人1 这种代号，也别 @ 人，直接说话就行。",
 }
 
-# the prompt's stand-ins must never reach the group: @某人1, or a lone capital letter
-# used as someone's name (A说 / B你 / 问问C). B站 / A股 / C语言 aren't names.
-_PLACEHOLDER = re.compile(r"@?某人\d+|@[A-Z](?![A-Za-z])|(?<![A-Za-z0-9])[A-HJ-NP-Z](?=\s?(说|你|的|刚|也|呢|吧|啊|哈|问|在|是|：|:|，|,))"
-                          r"|(?:问问|跟|和|给|让)[A-HJ-NP-Z](?![A-Za-z0-9站股])")
+# the prompt's stand-ins must never reach the group: @某人1, and any letter the prompt
+# used for a speaker, standing alone (问一下A, A同意了, @B). Ordinary terms built on a
+# letter stay fine: B站, A股, C位, C语言, A面, A4 (PR #30 review).
+_SOMEONE = re.compile(r"@?某人\d+")
+_TERM_AFTER = "站股位面级类档罩区服卡队组"
 
 
-def placeholders(text: str) -> bool:
-    return bool(_PLACEHOLDER.search(text or ""))
+def placeholders(text: str, letters: set[str] | None = None) -> bool:
+    t = text or ""
+    if _SOMEONE.search(t):
+        return True
+    use = "".join(sorted(letters)) if letters is not None else "A-HJ-NP-Z"
+    if not use:
+        return False
+    pat = rf"(?<![A-Za-z0-9])[{use}](?![A-Za-z0-9]|[{_TERM_AFTER}]|语言)"
+    return bool(re.search(pat, t))
 
 
 _SINCERE_AI = re.compile(r"(你|阿灯).{0,4}(是不是|是|真是)\s*(AI|ai|Ai|机器人|人工智能|真人)")
@@ -136,6 +144,7 @@ async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhyt
     base = build_prompt(m, context, now, rhythm)
     known = render_chat(m, context, CONTEXT_LINES) + "\n" + persona.core
     sincere_ai = bool(_SINCERE_AI.search(m.text or ""))
+    letters = speaker_letters(m, context, CONTEXT_LINES)
     limit = group_p90_len * LENGTH_FACTOR if group_p90_len else None
     out = Composed("drop")
     prompt = base
@@ -166,7 +175,7 @@ async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhyt
             v = check(draft, protected=persona.protected, canaries=persona.canaries,
                       allowed=persona.examples, context=known, attempt=attempt, sincere_ai=sincere_ai,
                       group_p90_len=limit, rules=rules, rng=rng)
-            if v.verdict == "send" and not placeholders(draft):
+            if v.verdict == "send" and not placeholders(draft, letters):
                 out.outcome, out.parts, out.delays = "send", v.parts, v.delays
                 return out
             kinds = [h.kind for h in v.hits] or ["placeholder"]
