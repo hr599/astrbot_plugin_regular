@@ -51,8 +51,9 @@ class Pipeline:
         answers = self.store.person_of(p.reply_to)
         if answers is None and prev and prev[-1]["person_id"] != pid and ev.ts - prev[-1]["ts"] <= 90:
             answers = prev[-1]["person_id"]
-        if answers is not None and answers != pid and not from_bot:
-            out["answers"] = answers
+        to_bot = answers is not None and self.store.uid_of(answers) in self.gate_cfg.bot_uids
+        if answers is not None and answers != pid and not from_bot and not to_bot:
+            out["answers"] = answers  # human-to-human only: other bots never enter relationship records
         # argument heat: fast A-B-A back-and-forth, insults, 别吵了; 5-minute half-life
         back_and_forth = (len(prev) >= 2 and prev[-1]["person_id"] not in (pid, None)
                           and prev[-2]["person_id"] == pid and ev.ts - prev[-2]["ts"] <= 120)

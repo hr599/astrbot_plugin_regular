@@ -239,6 +239,12 @@ class Store:
         row = self.db.execute("SELECT person_id FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
         return row[0] if row else None
 
+    def uid_of(self, person_id: int | None) -> str | None:
+        if person_id is None:
+            return None
+        row = self.db.execute("SELECT platform_uid FROM people WHERE person_id=?", (person_id,)).fetchone()
+        return row[0] if row else None
+
     def set_salience(self, msg_id: str, value: float) -> None:
         self.db.execute("UPDATE messages SET salience=? WHERE msg_id=?", (float(value), msg_id))
         self.db.execute(

@@ -51,8 +51,10 @@ class Signals:
     heat_cue: bool = False
 
     def to_trace(self) -> dict:
+        # never the matched words: traces outlive a recall (撤回), so they carry only the
+        # cue names ("serious", "crisis" in cues), not text from the message
         d = {"salience": round(self.salience, 3), "cues": self.cues}
-        for k in ("serious_cue", "crisis_cue", "rude_to_bot", "self_disclosure", "correction", "heat_cue"):
+        for k in ("rude_to_bot", "self_disclosure", "correction", "heat_cue"):
             v = getattr(self, k)
             if v:
                 d[k] = v

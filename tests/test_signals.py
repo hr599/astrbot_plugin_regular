@@ -112,8 +112,15 @@ class PipelineSignalTests(unittest.TestCase):
         self.msg("人类的话", uid=FRIEND, mid=2, dt=10)
         out = self.msg("机器人接话", uid=OTHER, mid=3, dt=20)
         self.assertNotIn("answers", out.reasons["signals"])  # bots never feed who-answers-whom
+        # a human answering a bot (quick follow-up or a quote) doesn't count either
+        out = self.msg("人类回机器人", uid=FRIEND, mid=4, dt=30)
+        self.assertNotIn("answers", out.reasons["signals"])
+        q = [{"type": "reply", "data": {"id": "3"}}, {"type": "text", "data": {"text": "签到"}}]
+        out = self.msg("", uid=ME, mid=5, dt=500, segs=q)
+        self.assertNotIn("answers", out.reasons["signals"])
+        self.msg("", uid=OTHER, mid=6, dt=510, segs="收到")
         rec = from_store(self.s, SCOPE, bot_uids={OTHER})
-        self.assertEqual([m.from_bot for m in rec.messages], [True, False, True])
+        self.assertEqual([m.from_bot for m in rec.messages], [True, False, True, False, False, True])
 
     def test_reaction_tracking(self):
         self.msg("好看吗", mid=5)
@@ -132,6 +139,16 @@ class PipelineSignalTests(unittest.TestCase):
         blob = json.dumps(r, ensure_ascii=False)
         self.assertIn("serious", blob)  # cue names are ours: visible
         self.assertNotIn("爷爷", blob)  # matched text is the friend's: masked
+
+    def test_recall_leaves_no_cue_text_in_traces(self):
+        # Codex P2 on #10: a stored copy of the matched words outlived 撤回
+        self.msg("我爷爷今天早上走了", mid=1)
+        self.p.handle(ev({"post_type": "notice", "notice_type": "group_recall", "group_id": int(GROUP),
+                          "user_id": int(FRIEND), "operator_id": int(FRIEND), "message_id": 1,
+                          "self_id": int(BOT), "time": self.t + 5}))
+        rows = [r[0] for r in self.s.db.execute("SELECT reasons FROM traces")]
+        self.assertTrue(rows)
+        self.assertFalse(any("爷爷" in (r or "") or "走了" in (r or "") for r in rows))
 
 
 if __name__ == "__main__":
