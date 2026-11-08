@@ -596,6 +596,28 @@ class BenchTests(unittest.TestCase):
         fx = replay(load_fixtures()[0]).metrics  # fixtures aren't split
         self.assertEqual((fx["labeled"], fx["held_out"]), (fx["labeled_dev"], None))
 
+    def test_labels_are_a_ceiling_not_a_target(self):
+        # the user's call: "3 reply" = a reply would be natural, quiet is fine too
+        lab = lambda addressed, should: {"addressed": addressed, "should": should}  # noqa: E731
+        msgs = [Msg(f"m{i}", 1000 + i, "a", "hi") for i in range(7)]
+        labels = {"m0": lab(False, "reply"), "m1": lab(False, "reply"), "m2": lab(False, "react"),
+                  "m3": lab(False, "quiet"), "m4": lab(True, "reply"), "m5": lab(True, "react"),
+                  "m6": lab(False, "react")}
+        acts = {"m0": "quiet", "m1": "reply", "m2": "reply", "m3": "react", "m4": "react",
+                "m5": "reply", "m6": "quiet"}
+
+        def policy(m, ctx, now, **kw):
+            d = decide(m, ctx, now)
+            d.action = acts[m.msg_id]
+            return d
+
+        mt = replay(Recording("t", "fixture", msgs, labels), policy=policy).metrics
+        # m2 (reply where react was the ceiling) and m3 (react where quiet) overstep;
+        # m4 (talked to, label says reply, only reacted) is under; the rest are within
+        self.assertEqual((mt["overstep"], mt["missed_addressed"]), (2, 1))
+        self.assertEqual(mt["within_label"], round(4 / 7, 3))
+        self.assertEqual(mt["chime_use"], round(2 / 4, 3))  # took m1, m2 of m0/m1/m2/m6
+
     # PR #4 review: CLI must score with the same aliases as the live bot and /reg bench
     def test_cli_and_dm_agree_with_custom_alias(self):
         with tempfile.TemporaryDirectory() as d:

@@ -69,14 +69,14 @@ def _metric_rows(m: dict, source: str) -> str:
         row("labels used for tuning (dev) / held out (test)",
             f"{m['labeled_dev']} / {m['labeled'] - m['labeled_dev']}")
     held = m.get("held_out") or {}
-    for k in ("addressed_precision", "addressed_recall", "action_agreement",
-              "speak_precision", "speak_recall"):
+    for k in ("addressed_precision", "addressed_recall", "within_label", "overstep_rate",
+              "missed_addressed_rate", "chime_use", "action_agreement"):
         v = m[k]
         txt = "n/a (no labels yet)" if v is None else f"{v:.0%}"
         if source != "fixture":
             hv = held.get(k)
             txt += "  ·  held out: " + ("n/a" if hv is None else f"{hv:.0%}")
-        row(k.replace("_", " "), txt)
+        row(_LABELS.get(k, k.replace("_", " ")), txt)
     if m.get("expects"):
         row("bot-loop breaks (hard gate: 0)", m["bot_loop_breaks"], m["bot_loop_breaks"] == 0)
         for e, d in sorted(m["expects"].items()):
@@ -85,6 +85,15 @@ def _metric_rows(m: dict, source: str) -> str:
     for t, d in sorted(m["tags"].items()):
         row(f"tag {t}: would speak", f"{d['would_speak']} / {d['moments']} (judged in M2)")
     return "".join(rows)
+
+
+_LABELS = {
+    "within_label": "within your labels (main score)",
+    "overstep_rate": "overstep: did more than the label allows",
+    "missed_addressed_rate": "talked to, did less than the label asks",
+    "chime_use": "allowed jump-ins taken (no target; bot share caps volume)",
+    "action_agreement": "exact action match",
+}
 
 
 def _step_rows(run: Run) -> str:

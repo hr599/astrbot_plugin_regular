@@ -142,19 +142,39 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
     for s in lab:
         confusion[s.label["should"]][s.decision.action] += 1
     agree = sum(confusion[a][a] for a in confusion)
-    spoke_label = sum(1 for s in lab if s.label["should"] != "quiet")
-    spoke_both = sum(1 for s in lab if s.label["should"] != "quiet" and s.decision.action != "quiet")
-    spoke_pred = sum(1 for s in lab if s.decision.action != "quiet")
+    # Labels are a ceiling, not a target (the user's call, 2026-11-08): for moments not
+    # meant for 阿灯, "3 reply" means a reply would be natural but staying quiet is fine
+    # too, and "4 react" means at most a reaction. Only moments meant for 阿灯 set a
+    # floor: someone talking to it gets at least a reaction ("2"), or a reply ("1").
+    # How much it speaks overall is held by bot share (< 10% of live messages).
+    over = under = chime_moments = chime_used = 0
+    for s in lab:
+        a, cap = _RANK[s.decision.action], _RANK[s.label["should"]]
+        if s.label["addressed"]:
+            if a < max(cap, 1):
+                under += 1
+        else:
+            if a > cap:
+                over += 1
+            if cap > 0:
+                chime_moments += 1
+                chime_used += int(a > 0)
+    addressed_n = sum(1 for s in lab if s.label["addressed"])
     return {
         "addressed_precision": _ratio(tp, tp + fp),
         "addressed_recall": _ratio(tp, tp + fn),
-        "action_agreement": _ratio(agree, len(lab)),
-        # of the moments you said a regular would speak, how many it caught, and how
-        # often it speaks when it shouldn't
-        "speak_recall": _ratio(spoke_both, spoke_label),
-        "speak_precision": _ratio(spoke_both, spoke_pred),
+        "action_agreement": _ratio(agree, len(lab)),  # exact match; shown for continuity
+        "within_label": _ratio(len(lab) - over - under, len(lab)),  # the main action score
+        "overstep": over,  # did more than the label allows (spoke where you said quiet, ...)
+        "overstep_rate": _ratio(over, len(lab)),
+        "missed_addressed": under,  # talked to, and did less than the label asks
+        "missed_addressed_rate": _ratio(under, addressed_n),
+        "chime_use": _ratio(chime_used, chime_moments),  # of allowed jump-ins, how many it took (no target)
         "confusion": confusion,
     }
+
+
+_RANK = {"quiet": 0, "react": 1, "reply": 2}
 
 
 def merge(runs: list[Run]) -> dict[str, Any]:
