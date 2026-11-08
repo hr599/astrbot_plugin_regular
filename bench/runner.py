@@ -40,7 +40,12 @@ class Run:
 def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
            aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str = POLICY_VERSION) -> Run:
     steps, history = [], []
+    scene = None
     for m in rec.messages:
+        if m.scene != scene:
+            # a new independent scenario: the policy must not see the previous one
+            # (PR #5 review). Live recordings have no scenes, so this never fires there.
+            history, scene = [], m.scene
         d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases)
         steps.append(Step(m, d, rec.labels.get(m.msg_id)))
         history.append(m)

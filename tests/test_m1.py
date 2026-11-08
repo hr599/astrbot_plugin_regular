@@ -333,6 +333,60 @@ class ReviewRound2Tests(unittest.TestCase):
                     self.assertEqual(lab["should"], "reply", f"{r.name}:{x.msg_id}")
 
 
+class SyntheticReviewFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self.rec = next(r for r in load_fixtures() if r.name == "synthetic_review_v1")
+
+    def test_loads_with_own_clock(self):
+        crisis = next(m for m in self.rec.messages if m.msg_id == "C07-03")
+        self.assertEqual(time.strftime("%H:%M", time.gmtime(crisis.ts + 8 * 3600)), "02:41")
+        ts = [m.ts for m in self.rec.messages]
+        self.assertEqual(ts, sorted(ts))  # one conversation per day, in order
+
+    def test_counts_and_roles(self):
+        self.assertEqual(len(self.rec.messages), 163)
+        self.assertEqual(len(self.rec.labels), 154)
+        self.assertTrue(any(m.from_bot for m in self.rec.messages))
+        self.assertTrue(all(self.rec.labels.get(m.msg_id) is None for m in self.rec.messages if m.is_bot))
+
+    def test_scenes_are_isolated(self):
+        """PR #5 review: each scenario's first message gets no context, and every
+        later one sees only its own scene's earlier messages."""
+        seen = []
+
+        def spy(m, ctx, now, **kw):
+            seen.append((m, list(ctx)))
+            return decide(m, ctx, now, **kw)
+
+        replay(self.rec, policy=spy)
+        firsts = {}
+        for m, ctx in seen:
+            if m.scene not in firsts:
+                firsts[m.scene] = m.msg_id
+                self.assertEqual(ctx, [], m.msg_id)
+            else:
+                self.assertTrue(all(c.scene == m.scene for c in ctx), m.msg_id)
+                self.assertTrue(all(c.ts <= m.ts for c in ctx), m.msg_id)
+        self.assertEqual(len(firsts), 16)
+        c7 = next(ctx for m, ctx in seen if m.msg_id == "C07-01")
+        self.assertEqual(c7, [])
+        c7_3 = next(ctx for m, ctx in seen if m.msg_id == "C07-03")
+        self.assertEqual([c.msg_id for c in c7_3], ["C07-01", "C07-02"])
+
+    def test_store_recordings_unaffected_by_scenes(self):
+        msgs = [Msg(str(i), i, "a", f"m{i}") for i in range(5)]
+        seen = []
+        replay(Recording("t", "store", msgs), policy=lambda m, c, n, **k: (seen.append(len(c)), decide(m, c, n))[1])
+        self.assertEqual(seen, [0, 1, 2, 3, 4])
+
+    def test_regenerates_identically(self):
+        import subprocess
+        import sys
+        before = Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes()
+        subprocess.run([sys.executable, "tools/make_review_fixture.py"], check=True, capture_output=True)
+        self.assertEqual(Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes(), before)
+
+
 class GroupScopeTests(unittest.TestCase):
     """PR #4 review, round 3: label and save from the watched groups, not scopes[0]."""
 
@@ -410,8 +464,8 @@ class BenchTests(unittest.TestCase):
         for r in recs:
             run = replay(r)
             self.assertEqual(run.metrics["explicit_missed"], 0, r.name)
-            self.assertEqual(run.metrics["labeled"], len(r.labels) - sum(
-                1 for k in r.labels if any(x.msg_id == k and x.is_bot for x in r.messages)))
+            people = {x.msg_id for x in r.messages if not x.is_bot and x.kind == "message"}
+            self.assertEqual(run.metrics["labeled"], sum(1 for k in r.labels if k in people))
 
     def test_replay_is_deterministic(self):
         r = load_fixtures()[0]

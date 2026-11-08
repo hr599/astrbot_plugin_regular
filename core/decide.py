@@ -46,6 +46,7 @@ class Msg:
     poke_bot: bool = False
     is_bot: bool = False  # this bot (阿灯) said it
     from_bot: bool = False  # another bot in the group said it
+    scene: str = ""  # bench only: independent scenario id; replay resets history between scenes
     media: list[str] = field(default_factory=list)
 
 
