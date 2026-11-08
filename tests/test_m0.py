@@ -96,6 +96,7 @@ class PerceiveTests(unittest.TestCase):
         self.assertEqual(kind({"file": "a", "subType": 1}), ["sticker"])      # LLBot 8.3.2
         self.assertEqual(kind({"file": "a", "subType": "1"}), ["sticker"])
         self.assertEqual(kind({"file": "a", "subType": 0}), ["image"])
+        self.assertEqual(kind({"file": "a", "subType": 7}), ["sticker"])  # keyboard-app sticker
         self.assertEqual(kind({"file": "a", "summary": "[动画表情]"}), ["sticker"])
         self.assertEqual(kind({"file": "a", "subType": 0, "summary": "[动画表情]"}), ["image"])
         self.assertEqual(kind({"file": "a"}), ["image"])
@@ -180,6 +181,27 @@ class PipelineTests(unittest.TestCase):
         st = self.s.stats()
         self.assertEqual((st["messages"], st["people"], st["scopes"], st["traces_24h"]), (0, 0, 0, 0))
 
+    def test_quote_resolution_in_trace(self):
+        self.p.handle(ev(group_msg("原话", mid=10)))
+        quote = [{"type": "reply", "data": {"id": "10"}}, {"type": "text", "data": {"text": "同意"}}]
+        self.assertTrue(self.p.handle(ev(group_msg(quote, mid=11))).reasons["reply_found"])
+        missing = [{"type": "reply", "data": {"id": "999"}}, {"type": "text", "data": {"text": "?"}}]
+        self.assertFalse(self.p.handle(ev(group_msg(missing, mid=12))).reasons["reply_found"])
+        self.assertIsNone(self.p.handle(ev(group_msg("plain", mid=13))).reasons["reply_found"])
+
+    def test_image_subtypes_traced(self):
+        segs = [{"type": "image", "data": {"subType": 7}}, {"type": "image", "data": {"sub_type": 1}},
+                {"type": "image", "data": {}}]
+        out = self.p.handle(ev(group_msg(segs)))
+        self.assertEqual(out.reasons["image_subtypes"], ["7", "1", ""])
+        self.assertEqual(out.reasons["media"], ["sticker", "sticker", "image"])
+
+    def test_opt_outs_any_platform(self):
+        pid = self.s.person("llbot", FRIEND, "小王", 1)
+        self.s.db.execute("UPDATE people SET opted_out=1 WHERE person_id=?", (pid,))
+        self.assertEqual(self.s.opted_out_uids(), {FRIEND})
+        self.assertEqual(self.s.opted_out_uids("aiocqhttp"), set())
+
     def test_recall_notice(self):
         self.p.handle(ev(group_msg("oops", mid=42)))
         notice = {"post_type": "notice", "notice_type": "group_recall", "group_id": int(GROUP),
@@ -248,6 +270,8 @@ class ReviewRegressionTests(unittest.TestCase):
                 blob = z.read("raw_events.json").decode()
         for secret in ("private words", "hidden phrase", "md secret", '"hi"', "987654321"):
             self.assertNotIn(secret, blob)
+        self.assertEqual(redact({"reply_found": True, "image_subtypes": ["7", ""]}),
+                         {"reply_found": True, "image_subtypes": ["7", ""]})
         self.assertEqual(redact({"type": "image", "data": {"subType": 1, "sub_type": 1}})["data"],
                          {"subType": 1, "sub_type": 1})
         for shape in ('"json"', '"xml"', '"markdown"', '"reveal"', '"logged"'):
