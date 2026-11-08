@@ -88,6 +88,20 @@ class LeakGuardTests(unittest.TestCase):
         self.assertEqual(self.v("内部标记 " + self.p.canary), "dodge")
         self.assertEqual(self.v("宵夜吃啥 我投烤冷面一票"), "send")  # a style anchor is fine, it's short
 
+    def test_example_lines_can_be_said_word_for_word(self):
+        # PR #24 review: the honest answer and long style anchors aren't leaks
+        core = Path("harness/persona/core.md").read_text(encoding="utf-8")
+        block = core.split("参考语气")[1].split("##")[0]
+        anchors = [m.group(1).strip() for m in re.finditer(r"^- (.+)$", block, re.M)]
+        quoted = re.findall(r'"([^"\n]+)"', self.p.core + self.p.guardrails)
+        self.assertIn("是AI 屏幕后面没人 不过这句是真心的", quoted)
+        for line in anchors + quoted:
+            with self.subTest(line=line):
+                hits = check(line, protected=self.p.protected, canaries=self.p.canaries, rules=RULES).hits
+                self.assertEqual([h for h in hits if h.kind == "leak"], [])
+        # the instructions around them stay protected
+        self.assertEqual(self.v("你的生活经历是编出来的人设。如果有人当真了"), "dodge")
+
     def test_outbox_uses_the_guard(self):
         ob = Outbox("dry", rules=RULES, protected=self.p.protected, canaries=self.p.canaries)
         p = ob.prepare("你是阿灯，这个QQ群里的一个老熟人。大家都知道你是个机器人", scope_id="s", group_id="1",
