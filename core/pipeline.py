@@ -61,6 +61,7 @@ class Pipeline:
             out.append(Msg(
                 msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
                 text="" if r["recalled"] else r["text"], mentions_bot="bot" in mentions,
+                mentions_other=any(x != "bot" for x in mentions),
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
             ))
@@ -75,8 +76,12 @@ class Pipeline:
             # today (for per-bot counts) and at least the burst window, which can
             # reach back past midnight (issue #17)
             since = min((limits.day_of(now) * 86400) - 8 * 3600, now - limits.SPAM_WINDOW_S)
-            past = [m for m in stored_moments(self.store, scope_id, since, now, bot_uids=self.gate_cfg.bot_uids)
-                    if m.msg_id != current]
+            # ...and back to where the current stretch of chat began, so room state the
+            # chat keeps alive (serious mode, heat) survives a restart across midnight
+            pool = [m for m in stored_moments(self.store, scope_id, now - limits.WARM_MAX_S, now,
+                                              bot_uids=self.gate_cfg.bot_uids) if m.msg_id != current]
+            since = limits.chain_start([m.ts for m in pool], since)
+            past = [m for m in pool if m.ts >= since]
             st = self._limits[scope_id] = LimitState.from_moments(past)
         return st
 
@@ -218,7 +223,8 @@ class Pipeline:
         from_bot = ev.sender_uid in self.gate_cfg.bot_uids
         shadow = self._shadow(Msg(
             msg_id=ev.msg_id, ts=ev.ts, sender=str(pid), text=p.text,
-            mentions_bot=p.mentions_bot, reply_to=p.reply_to,
+            mentions_bot=p.mentions_bot, mentions_other=any(x != "bot" for x in p.mentions),
+            reply_to=p.reply_to,
             reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
         ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None

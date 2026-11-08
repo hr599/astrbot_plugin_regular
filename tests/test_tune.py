@@ -119,3 +119,104 @@ class LiveShadowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Review26Tests(unittest.TestCase):
+    """PR #26 review findings, one test each."""
+    EVENING = 1_793_451_600  # Sat 21:00 UTC+8
+
+    def test_second_apply_keeps_earlier_tuned_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            (data / PARAMS_FILE).write_text(json.dumps(
+                {"reply_chime": 0.8, "chime": {"interest": 0.6}, "heat_quiet": 0.7}), encoding="utf-8")
+            base = load_params(data)
+            res = tune(real_like(), base)
+            (data / "bench").mkdir()
+            (data / "bench" / "tune-last.json").write_text(json.dumps({**res, "when": "t"}), encoding="utf-8")
+            if not res["changed"]:
+                self.skipTest("search kept everything")
+            tune_command([], data, ["apply"])
+            applied = load_params(data)
+            for k in GRID:  # the applied setting is exactly the one that was evaluated
+                want = res["changed"][k][1] if k in res["changed"] else get(base, k)
+                self.assertEqual(get(applied, k), want, k)
+            self.assertEqual(applied["heat_quiet"], 0.7)  # a hand-edited key outside the grid stays
+
+    def test_merged_burst_still_counts_every_at(self):
+        from core.decide import Msg, decide
+        from core.decide_rules import decide_m2
+        from bench.runner import replay
+        msgs = [Msg(f"a{i}", self.EVENING + t, "p1", "在吗", mentions_bot=True) for i, t in enumerate((0, 1, 2, 3, 10))]
+        for policy in (decide, decide_m2):
+            with self.subTest(policy=policy.__name__):
+                run = replay(Recording("burst", "fixture", msgs), policy, params=load_params())
+                last = run.steps[-1].decision
+                self.assertEqual((last.action, last.reasons.get("rule")), ("react", "rate_limited"))
+
+    def test_crisis_with_a_name_still_gets_a_reply(self):
+        from core import limits
+        from core.decide import Msg
+        from core.decide_rules import decide_m2
+        for text in ("我真的撑不下去了", "我真的撑不下去了 阿灯救救我"):
+            with self.subTest(text=text):
+                d = decide_m2(Msg("c", self.EVENING, "p1", text), [], self.EVENING,
+                              aliases=("阿灯", "灯"), state=limits.LimitState(), params=load_params())
+                self.assertEqual((d.action, d.reasons["rule"]), ("reply", "crisis"))
+
+    def test_reply_in_parts_keeps_the_follow_up(self):
+        from core import limits
+        from core.decide import Msg
+        from core.decide_rules import decide_m2
+        E = self.EVENING
+        for parts in (1, 2):
+            with self.subTest(parts=parts):
+                hist = [Msg("h", E, "A", "今天好累")] + [Msg(f"b{i}", E + 2 + i, "bot", "辛苦了", is_bot=True)
+                                                        for i in range(parts)]
+                st = limits.LimitState.from_moments(hist)
+                d = decide_m2(Msg("f", E + 10, "A", "然后呢"), hist, E + 10, aliases=("阿灯",), state=st,
+                              params=load_params())
+                self.assertEqual(d.action, "reply")
+                self.assertEqual(d.address_kind, "follow_up")
+
+
+class Review26LiveTests(unittest.TestCase):
+    EVENING = 1_793_451_600
+
+    def setUp(self):
+        self.d = tempfile.TemporaryDirectory()
+        self.s = Store(Path(self.d.name) / "regular.db")
+
+    def tearDown(self):
+        self.s.close()
+        self.d.cleanup()
+
+    def test_live_and_replay_agree_on_an_at_for_someone_else(self):
+        from bench.runner import replay
+        from bench.situations import from_store
+        from core.decide_rules import decide_m2
+        from tests.test_m0 import SCOPE
+        p = Pipeline(self.s, GateConfig(group_ids={GROUP}), params=load_params())
+        segs = [{"type": "at", "data": {"qq": "20002"}}, {"type": "text", "data": {"text": " 有人会blender吗"}}]
+        live = p.handle(ev(group_msg(segs, mid=1, ts=self.EVENING))).reasons["shadow"]["would"]
+        rec = from_store(self.s, SCOPE)
+        replayed = replay(rec, decide_m2, params=load_params()).steps[-1].decision.action
+        self.assertEqual(live, replayed)
+        self.assertEqual(live, "quiet")
+
+    def test_serious_mode_survives_a_restart_after_midnight(self):
+        E = self.EVENING
+        outs = []
+        for restart in (False, True):
+            with tempfile.TemporaryDirectory() as d:
+                s = Store(Path(d) / "regular.db")
+                p = Pipeline(s, GateConfig(group_ids={GROUP}), params=load_params())
+                p.handle(ev(group_msg("我家猫去世了", mid=1, ts=E + 10_500)))      # 23:55 UTC+8
+                p.handle(ev(group_msg("抱抱", uid="30003", mid=2, ts=E + 10_700)))  # 23:58
+                if restart:
+                    p = Pipeline(s, GateConfig(group_ids={GROUP}), params=load_params())
+                sh = p.handle(ev(group_msg("有人会blender吗", uid="40004", mid=3, ts=E + 11_100))).reasons["shadow"]
+                outs.append((sh["would"], sh["rule"]))
+                s.close()
+        self.assertEqual(outs[0], ("quiet", "serious"))
+        self.assertEqual(outs[1], outs[0])

@@ -133,18 +133,20 @@ def decide_m2(m: Msg, context: list[Msg], now: int, *, aliases: tuple[str, ...] 
     state_now = rhythm_state(now, P.get("_windows", []))
     reasons["rhythm"] = state_now
 
+    sig = signals(text)
+    if sig.crisis_cue and not sig.crisis_joking:
+        # design doc: a crisis signal gets a caring reply, never a joke or a deflection;
+        # this overrides rhythm, argument, serious mode, the share cap, and a name-only
+        # address that would otherwise just react (PR #26 review). Direct addresses
+        # and bot-loop limits were settled above. (M2b: the decide model checks
+        # sincerity; compose writes the care, guardrails the hotline.)
+        return Decision("reply", score, kind, {**reasons, "rule": "crisis"}, POLICY)
     if score >= P["reply_addressed"]:
         return Decision("reply", score, kind, {**reasons, "rule": "addressed"}, POLICY)
     if score >= P["react_addressed"]:
         return Decision("react", score, kind, {**reasons, "rule": "addressed_react"}, POLICY)
 
     # not for 阿灯: does he chime in?
-    sig = signals(text)
-    if sig.crisis_cue and not sig.crisis_joking:
-        # design doc: a crisis signal gets a caring reply, never a joke or a deflection;
-        # this overrides rhythm, argument, serious mode and the share cap (M2b: the
-        # decide model checks sincerity; compose writes the care, guardrails the hotline)
-        return Decision("reply", score, kind, {**reasons, "rule": "crisis"}, POLICY)
     if state_now == "asleep":
         return Decision("quiet", score, kind, {**reasons, "rule": "asleep"}, POLICY)
     if st.heat_now(now) >= P["heat_quiet"]:

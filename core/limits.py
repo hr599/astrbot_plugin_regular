@@ -38,6 +38,20 @@ SPAM_MAX = 4
 UTC8 = 8 * 3600
 ROOM_WINDOW = 30  # messages the share-of-recent-messages cap looks at
 SERIOUS_QUIET_S = 1800  # serious mode lasts until the thread is quiet for 30 minutes
+WARM_MAX_S = 7 * 86400  # restart warm-up reaches back at most this far
+
+
+def chain_start(timestamps: list[int], since: int, gap: int = SERIOUS_QUIET_S) -> int:
+    """The start of the stretch of chat still running at `since`: walk back from
+    since until a gap longer than `gap` (no message for 30 min ends serious mode
+    and lets heat die down). Restart warm-up begins here, so room state that the
+    chat keeps extending (serious mode) is rebuilt in full (PR #26 review)."""
+    start = since
+    for t in sorted((t for t in timestamps if t < since), reverse=True):
+        if start - t > gap:
+            break
+        start = t
+    return start
 
 
 def day_of(ts: int) -> int:
@@ -121,8 +135,10 @@ class LimitState:
             self.recent.append((m.ts, bool(m.is_bot)))
         if m.is_bot:
             self.last_bot_ts = m.ts
-            self.bot_answered = self.prev.sender if self.prev is not None and is_human(self.prev) else None
-            self.others_since_bot = set()
+            # a reply sent in parts: the later parts keep who it was answering (PR #26 review)
+            if not (self.prev is not None and self.prev.is_bot):
+                self.bot_answered = self.prev.sender if self.prev is not None and is_human(self.prev) else None
+                self.others_since_bot = set()
         elif is_human(m):
             if self.bot_answered is not None and m.sender != self.bot_answered:
                 self.others_since_bot.add(m.sender)

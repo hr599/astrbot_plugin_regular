@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ._core import DEFAULT_ALIASES, decide_m2, load_params
+from ._core import DEFAULT_ALIASES, decide_m2, load_params, merge_params as merge
 from .runner import Run, replay
 from .situations import Recording
 
@@ -143,9 +143,13 @@ def tune(recs: list[Recording], base: dict[str, Any], aliases=DEFAULT_ALIASES,
             break
     after = evaluate(_runs(recs, best, aliases))
     changed = {k: v for k, v in changed.items() if get(base, k) != v}
+    defaults = load_params()
     return {"ok": True, "before": before, "after": after, "objective": [objective(before), best_score],
             "changed": {k: [get(base, k), v] for k, v in changed.items()}, "evals": evals,
-            "params": {k: get(best, k) for k in changed}}
+            "params": {k: get(best, k) for k in changed},
+            # the full winning setting relative to the harness defaults: what apply
+            # writes, so an earlier tuned value the search kept isn't lost (PR #26 review)
+            "override": {k: get(best, k) for k in grid if get(best, k) != get(defaults, k)}}
 
 
 def _nest(flat: dict[str, Any]) -> dict[str, Any]:
@@ -172,8 +176,22 @@ def tune_command(recs: list[Recording], data_dir: Path, args: list[str], *,
         res = json.loads(last.read_text(encoding="utf-8"))
         if not res.get("changed"):
             return "上次调参没有找到更好的数，没什么可应用的。"
-        (data_dir / PARAMS_FILE).write_text(json.dumps(
-            {"_doc_tuned": res["when"], **_nest(res["params"])}, ensure_ascii=False, indent=2), encoding="utf-8")
+        p = data_dir / PARAMS_FILE
+        try:
+            current = json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+        except ValueError:
+            current = {}
+        # keep hand-edited keys outside the grid; every grid knob comes from the result
+        for path in GRID:
+            d = current
+            for k in path.split(".")[:-1]:
+                d = d.get(k) if isinstance(d, dict) else None
+            if isinstance(d, dict):
+                d.pop(path.split(".")[-1], None)
+        current = {k: v for k, v in current.items() if not (isinstance(v, dict) and not v)}
+        current = merge(current, _nest(res.get("override", res["params"])))
+        current["_doc_tuned"] = res["when"]
+        p.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
         if on_change:
             on_change()
         return f"已应用 {len(res['changed'])} 个参数到 {PARAMS_FILE}，影子决策立即生效。/reg bench tune reset 可撤销。"

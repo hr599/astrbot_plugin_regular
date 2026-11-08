@@ -100,7 +100,8 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
         d = policy(m, history[-CONTEXT:], m.ts, state=state, **kw)
         for j, part in enumerate(turn):
             steps.append(Step(part, d, rec.labels.get(part.msg_id), merged=j < len(turn) - 1))
-        state.observe(m)
+        for part in turn:  # one decision per turn, but the limits and the room see every message
+            state.observe(part)  # (PR #26 review: a merged burst of @s is still 4 @s)
         history.extend(turn)
     version = policy_version or (M2_POLICY if policy is decide_m2 else POLICY_VERSION)
     run = Run(rec, version, steps, params={"aliases": list(aliases)})
