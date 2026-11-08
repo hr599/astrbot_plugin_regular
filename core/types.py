@@ -19,7 +19,7 @@ class ChatEvent:
     """Everything the bot needs to know about one incoming platform event."""
 
     kind: str  # "message" | "notice" | "other"
-    platform: str  # AstrBot platform id, e.g. "aiocqhttp"
+    platform: str  # AstrBot platform id (user-named, e.g. "llbot"), not the adapter type
     scope_id: str  # AstrBot unified_msg_origin
     scope_kind: str  # "group" | "dm"
     group_id: str  # "" for DMs
@@ -52,6 +52,7 @@ class Perceived:
     is_command_like: bool
     injection_flags: list[str]  # heuristic markers; treat as data either way
     media_kinds: list[str]
+    image_subtypes: list[str] = field(default_factory=list)  # raw sub type per image, "" if absent
 
 
 @dataclass

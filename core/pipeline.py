@@ -65,6 +65,10 @@ class Pipeline:
             "stored": stored,
             "mentions_bot": p.mentions_bot,
             "replied_to": bool(p.reply_to),
+            # did the quoted message resolve to one we stored? False also when it predates
+            # the plugin, was purged, or the ids don't line up (the live check)
+            "reply_found": self.store.has_message(p.reply_to) if p.reply_to else None,
+            "image_subtypes": p.image_subtypes,
             "command_like": p.is_command_like,
             "injection_flags": p.injection_flags,
             "media": p.media_kinds,

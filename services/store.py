@@ -68,13 +68,16 @@ class Store:
         ).fetchone()
         return row[0] if row else None
 
-    def opted_out_uids(self, platform: str) -> set[str]:
-        return {
-            r[0]
-            for r in self.db.execute(
-                "SELECT platform_uid FROM people WHERE platform=? AND opted_out=1", (platform,)
-            )
-        }
+    def opted_out_uids(self, platform: str | None = None) -> set[str]:
+        """Opted-out uids; all platforms unless one is given. The platform is the
+        AstrBot adapter's id, which the user names (it's "llbot" on the live setup)."""
+        sql, args = "SELECT platform_uid FROM people WHERE opted_out=1", ()
+        if platform is not None:
+            sql, args = sql + " AND platform=?", (platform,)
+        return {r[0] for r in self.db.execute(sql, args)}
+
+    def has_message(self, msg_id: str) -> bool:
+        return self.db.execute("SELECT 1 FROM messages WHERE msg_id=?", (msg_id,)).fetchone() is not None
 
     def scope(self, scope_id: str, platform: str, kind: str, title: str | None = None) -> None:
         self.db.execute(

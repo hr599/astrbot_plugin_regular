@@ -133,7 +133,7 @@ class Regular(Star):
         return max(1, int(self.config.get("transcript_retention_days", 30) or 30))
 
     def _refresh_opt_outs(self) -> None:
-        self.gate_cfg.opted_out_uids = self.store.opted_out_uids("aiocqhttp")
+        self.gate_cfg.opted_out_uids = self.store.opted_out_uids()
 
     def _purge(self) -> None:
         cutoff = int(time.time()) - self._retention_days() * 86400
