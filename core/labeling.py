@@ -73,7 +73,7 @@ def pick(rows, rng: random.Random, aliases=DEFAULT_ALIASES, k: int = 5) -> list:
             break
         t = rng.choices(avail, weights=[weights[x] for x in avail])[0]
         out.append(by[t].pop())
-    return sorted(out, key=lambda r: (r["ts"], r["rid"]))
+    return sorted(out, key=lambda r: (r["scope_id"], r["ts"], r["rid"]))
 
 
 def parse_answers(arg: str) -> list[str] | None:
@@ -99,8 +99,11 @@ def _name(row) -> str:
 
 class Labeler:
     def __init__(self, store, *, aliases=DEFAULT_ALIASES, rng: random.Random | None = None,
-                 context: int = 3, batch: int = 5):
+                 context: int = 3, batch: int = 5, scopes=None):
+        """scopes: callable returning the scope ids to label from (the watched
+        groups); defaults to every group scope in the store."""
         self.store = store
+        self.scopes = scopes or (lambda: store.scope_ids("group"))
         self.aliases = aliases
         self.rng = rng or random.Random()
         self.context = context
@@ -108,26 +111,27 @@ class Labeler:
         self.pending: list[str] = []  # msg_ids of the batch on screen, in order
         self.shown_guide = False
 
-    def _scope(self) -> str | None:
-        ids = self.store.scope_ids("group")
-        return ids[0] if ids else None
 
     def _line(self, r, mark: str) -> str:
         text = "[已撤回]" if r["recalled"] else r["text"]
         return f"{mark}{_hhmm(r['ts'])} {_name(r)}: {text}"
 
     def next(self) -> str:
-        scope = self._scope()
-        if not scope:
+        scopes = self.scopes()
+        if not scopes:
             return "还没有记录到群消息。"
-        rows = pick(self.store.unlabeled(scope), self.rng, self.aliases, self.batch)
+        # every watched group with candidates, not just the first one stored
+        cands = [r for sc in scopes for r in self.store.unlabeled(sc)]
+        rows = pick(cands, self.rng, self.aliases, self.batch)
+        multi = len({r["scope_id"] for r in rows}) > 1 or len(scopes) > 1
         self.pending = [r["msg_id"] for r in rows]
         if not rows:
             return "没有待标注的消息了 👍"
         blocks = []
         for i, r in enumerate(rows, 1):
             ctx = [self._line(c, "   ") for c in self.store.before(r["msg_id"], self.context)]
-            blocks.append(f"【{i}】\n" + "\n".join(ctx + [self._line(r, " → ")]))
+            where = f" 群 {r['scope_id'].rsplit(':', 1)[-1]}" if multi else ""
+            blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ")]))
         head = ""
         if not self.shown_guide:
             head = GUIDE + "\n\n"

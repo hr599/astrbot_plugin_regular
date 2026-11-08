@@ -18,7 +18,8 @@ HEADER = [
     "// language good (overall pass, not row by row); the owner read it too (overall pass).",
     "// Labels are /reg label codes 1-5 mapped to addressed + should. Scored as its own fixture,",
     "// never mixed into live dev/held-out metrics. Source: tools/synthetic_review_v1.py.",
-    "// Each conversation is on its own day so contexts don't run into each other.",
+    "// Each conversation is its own scene: replay starts it with empty history (it also sits on",
+    "// its own day, which only keeps the clock realistic).",
 ]
 
 
@@ -29,7 +30,7 @@ def main():
         start = h * 3600 + m * 60
         for i, (who, text, code, tags, why, extra) in enumerate(c["rows"]):
             t = start + extra.get("t", i * 45)
-            d = {"id": f"{c['id']}-{i + 1:02d}", "day": day + t // 86400,
+            d = {"id": f"{c['id']}-{i + 1:02d}", "scene": c["id"], "day": day + t // 86400,
                  "time": f"{(t // 3600) % 24:02d}:{(t // 60) % 60:02d}:{t % 60:02d}",
                  "from": who.replace("@bot", ""), "text": text}
             if who == "阿灯":

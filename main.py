@@ -53,8 +53,10 @@ class Regular(Star):
         ) or DEFAULT_ALIASES
         self.admin = AdminCommands(
             self._status, self._debug_bundle, self._set_dump,
-            labeler=Labeler(self.store, aliases=self.aliases),
-            bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases),
+            labeler=Labeler(self.store, aliases=self.aliases,
+                            scopes=lambda: self.store.group_scopes(self.gate_cfg.group_ids)),
+            bench=lambda args: bench_command(self.store, self.data_dir, args, aliases=self.aliases,
+                                             group_ids=self.gate_cfg.group_ids),
         )
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
         self._refresh_opt_outs()

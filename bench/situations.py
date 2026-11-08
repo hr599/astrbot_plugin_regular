@@ -106,6 +106,8 @@ def load_fixture(path: Path) -> Recording:
      "label": {"addressed": false, "should": "quiet", "tags": ["heavy"]}}
     `t` is seconds from the fixture's start; the fake clock starts at a fixed
     Saturday 21:00 UTC+8 so time-of-day policies get a stable evening.
+    "scene": an id for independent scenarios in one file; replay starts each scene
+    with empty history, so scenarios never leak into each other's context.
     Alternatively a line can give its own clock: "day": n (days after that
     Saturday) and "time": "HH:MM[:SS]" (UTC+8), for chats where the hour matters
     (a 02:40 low moment, late-night banter)."""
@@ -132,6 +134,7 @@ def load_fixture(path: Path) -> Recording:
             mentions_bot=bool(d.get("at_bot")), reply_to=d.get("quote"),
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),
             is_bot=bool(d.get("bot")), from_bot=bool(d.get("from_bot")),
+            scene=str(d.get("scene", "")),
         ))
         if "label" in d:
             lab = dict(d["label"])

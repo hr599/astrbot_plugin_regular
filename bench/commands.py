@@ -34,23 +34,34 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
 
 
 def bench_command(store, data_dir: Path, args: list[str], *,
-                  aliases: tuple[str, ...] = DEFAULT_ALIASES) -> str:
+                  aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None) -> str:
+    """group_ids: the watched groups. Saving uses only those (an old group left in
+    the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
-    scopes = store.scope_ids("group")
+    watched = store.group_scopes(group_ids)
 
     if args and args[0].lower() == "save":
-        if not scopes:
+        if not watched:
             return "还没有群消息可以存。"
         name = args[1] if len(args) > 1 else time.strftime("week-%Y%m%d")
         since = int(time.time()) - SAVE_DAYS * 86400
-        rec = from_store(store, scopes[0], since_ts=since, name=name)
-        path = save(rec, bench_dir / "recordings")
-        return (f"存好了：{len(rec.messages)} 条，{len(rec.labels)} 个标注\n{path}\n"
-                "这份 recording 不受 30 天清理影响，含真实聊天内容，只留在本机。")
+        lines = []
+        for sc in watched:
+            gid = sc.rsplit(":", 1)[-1]
+            rec = from_store(store, sc, since_ts=since, name=name if len(watched) == 1 else f"{name}-{gid}")
+            if not any(m.kind == "message" for m in rec.messages):
+                lines.append(f"群 {gid}：最近 {SAVE_DAYS} 天没有记录，没存。")
+                continue
+            path = save(rec, bench_dir / "recordings")
+            lines.append(f"群 {gid}：存好了 {len(rec.messages)} 条，{len(rec.labels)} 个标注\n{path}")
+        if any("存好了" in x for x in lines):
+            lines.append("recording 不受 30 天清理影响，含真实聊天内容，只留在本机。")
+        return "\n".join(lines)
 
     recs: list[Recording] = []
-    for sc in scopes:
-        recs.append(from_store(store, sc, name="live (最近记录)"))
+    for sc in watched:
+        gid = sc.rsplit(":", 1)[-1]
+        recs.append(from_store(store, sc, name="live (最近记录)" if len(watched) == 1 else f"live 群 {gid}"))
     recs += load_saved(bench_dir / "recordings")
     recs += load_fixtures()
     runs = [replay(r, aliases=aliases) for r in recs if r.messages]

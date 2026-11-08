@@ -349,12 +349,105 @@ class SyntheticReviewFixtureTests(unittest.TestCase):
         self.assertTrue(any(m.from_bot for m in self.rec.messages))
         self.assertTrue(all(self.rec.labels.get(m.msg_id) is None for m in self.rec.messages if m.is_bot))
 
+    def test_scenes_are_isolated(self):
+        """PR #5 review: each scenario's first message gets no context, and every
+        later one sees only its own scene's earlier messages."""
+        seen = []
+
+        def spy(m, ctx, now, **kw):
+            seen.append((m, list(ctx)))
+            return decide(m, ctx, now, **kw)
+
+        replay(self.rec, policy=spy)
+        firsts = {}
+        for m, ctx in seen:
+            if m.scene not in firsts:
+                firsts[m.scene] = m.msg_id
+                self.assertEqual(ctx, [], m.msg_id)
+            else:
+                self.assertTrue(all(c.scene == m.scene for c in ctx), m.msg_id)
+                self.assertTrue(all(c.ts <= m.ts for c in ctx), m.msg_id)
+        self.assertEqual(len(firsts), 16)
+        c7 = next(ctx for m, ctx in seen if m.msg_id == "C07-01")
+        self.assertEqual(c7, [])
+        c7_3 = next(ctx for m, ctx in seen if m.msg_id == "C07-03")
+        self.assertEqual([c.msg_id for c in c7_3], ["C07-01", "C07-02"])
+
+    def test_store_recordings_unaffected_by_scenes(self):
+        msgs = [Msg(str(i), i, "a", f"m{i}") for i in range(5)]
+        seen = []
+        replay(Recording("t", "store", msgs), policy=lambda m, c, n, **k: (seen.append(len(c)), decide(m, c, n))[1])
+        self.assertEqual(seen, [0, 1, 2, 3, 4])
+
     def test_regenerates_identically(self):
         import subprocess
         import sys
         before = Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes()
         subprocess.run([sys.executable, "tools/make_review_fixture.py"], check=True, capture_output=True)
         self.assertEqual(Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes(), before)
+
+
+class GroupScopeTests(unittest.TestCase):
+    """PR #4 review, round 3: label and save from the watched groups, not scopes[0]."""
+
+    A, B = "555", "777"
+
+    def _store(self, groups):
+        s = Store(":memory:")
+        return s, Pipeline(s, GateConfig(group_ids=set(groups)))
+
+    def test_empty_first_group_doesnt_block(self):
+        s, p = self._store({self.A, self.B})
+        p.handle(ev(group_msg("/help", group=self.A, mid=1)))  # creates scope A, stores nothing
+        p.handle(ev(group_msg("B 群的聊天", group=self.B, mid=2)))
+        lab = Labeler(s, rng=random.Random(0), scopes=lambda: s.group_scopes({self.A, self.B}))
+        msg = lab.next()
+        self.assertEqual(len(lab.pending), 1)
+        self.assertIn("B 群的聊天", msg)
+        self.assertIn(f"群 {self.B}", msg)  # group named when several are watched
+
+    def test_switched_group_uses_the_new_one(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("旧群 A 的聊天", group=self.A, mid=1)))
+        p = Pipeline(s, GateConfig(group_ids={self.B}))  # config changed to B, same db
+        p.handle(ev(group_msg("新群 B 的聊天", group=self.B, mid=2)))
+        self.assertEqual(p.handle(ev(group_msg("A 的新消息", group=self.A, mid=3))).action, "drop")
+        lab = Labeler(s, rng=random.Random(0), scopes=lambda: s.group_scopes({self.B}))
+        msg = lab.next()
+        self.assertIn("新群 B 的聊天", msg)
+        self.assertNotIn("旧群 A", msg)
+        self.assertNotIn("群 ", msg.split("【1】")[1].split("\n")[0])  # one group: no tag
+        lab.answer("5")
+        self.assertIn("没有待标注", lab.next())  # finished B; never falls back to old A
+
+    def test_save_uses_watched_groups(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("旧群 A", group=self.A, mid=1)))
+        p = Pipeline(s, GateConfig(group_ids={self.B}))
+        p.handle(ev(group_msg("新群 B", group=self.B, mid=2)))
+        with tempfile.TemporaryDirectory() as d:
+            out = bench_command(s, Path(d), ["save", "wk"], group_ids={self.B})
+            self.assertIn(f"群 {self.B}：存好了 1 条", out)
+            rec = load_saved(Path(d) / "bench" / "recordings")
+            self.assertEqual([m.text for m in rec[0].messages], ["新群 B"])
+            out = bench_command(s, Path(d), ["save", "wk2"], group_ids={self.A, self.B})
+            self.assertIn(f"群 {self.A}：存好了", out)
+            self.assertIn(f"群 {self.B}：存好了", out)
+
+    def test_save_skips_empty(self):
+        s, p = self._store({self.A})
+        p.handle(ev(group_msg("/help", group=self.A, mid=1)))
+        with tempfile.TemporaryDirectory() as d:
+            out = bench_command(s, Path(d), ["save"], group_ids={self.A})
+            self.assertIn("没有记录，没存", out)
+            self.assertEqual(load_saved(Path(d) / "bench" / "recordings"), [])
+
+    def test_group_scopes_match_exact_id(self):
+        s = Store(":memory:")
+        for g in ("555", "1555", "5550"):
+            s.scope(f"llbot:GroupMessage:{g}", "llbot", "group")
+        self.assertEqual(s.group_scopes({"555"}), ["llbot:GroupMessage:555"])
+        self.assertEqual(len(s.group_scopes(None)), 3)
 
 
 class NameAddressTests(unittest.TestCase):

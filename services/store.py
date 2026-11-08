@@ -174,6 +174,16 @@ class Store:
     def scope_ids(self, kind: str = "group") -> list[str]:
         return [r[0] for r in self.db.execute("SELECT scope_id FROM scopes WHERE kind=?", (kind,))]
 
+    def group_scopes(self, group_ids=None) -> list[str]:
+        """Scope ids of the watched groups (scope_id ends with ":<group id>"). Old
+        scopes from groups no longer watched stay in the db but are left out
+        (PR #4 review, round 3). No group ids given -> every group scope."""
+        all_ids = self.scope_ids("group")
+        if not group_ids:
+            return all_ids
+        want = {str(g) for g in group_ids}
+        return [s for s in all_ids if s.rsplit(":", 1)[-1] in want]
+
     # ---- labels (M1) ---------------------------------------------------
     def set_label(self, msg_id: str, addressed: bool, should: str, ts: int | None = None) -> None:
         self.db.execute(
