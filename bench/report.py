@@ -144,3 +144,16 @@ def write_report(runs: list[Run], folder: Path, totals: dict) -> Path:
                                                 "metrics": r.metrics, "params": r.params} for r in runs]},
                    ensure_ascii=False, indent=1), encoding="utf-8")
     return path
+
+
+def forget_reports(folder: Path) -> int:
+    """/reg forget: delete the HTML trace viewers. They show message text (unlike the
+    numbers-only bench-*.json next to them, which /reg debug reads), and picking one
+    person's lines out of rendered HTML isn't reliable. /reg bench makes a fresh one.
+    Returns reports deleted."""
+    n = 0
+    if folder.exists():
+        for p in folder.glob("bench-*.html"):
+            p.unlink(missing_ok=True)
+            n += 1
+    return n

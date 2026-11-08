@@ -33,6 +33,12 @@
       "灯"
     ]
   },
+  "paused_group_ids": {
+    "description": "暂停中的群",
+    "type": "list",
+    "hint": "在这里的群暂时不记录、不处理（撤回照样抹掉之前记下的消息）。一般用私聊 /reg pause|resume 改，不用手填。",
+    "default": []
+  },
   "other_bot_ids": {
     "description": "群里其他机器人的 QQ 号",
     "type": "list",

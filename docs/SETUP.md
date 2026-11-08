@@ -158,6 +158,38 @@ arrived. The upgrade removes the ones M0 had logged. A message starting with
 Two-character names count anywhere; a single 灯 only counts when it's used as a
 name (灯，你觉得呢), not in 开灯 or 灯光.
 
+## Privacy controls (admin DM only)
+
+These work only from your DM, and only for accounts in AstrBot's `admins_id`.
+In the group, `/reg ...` is a command and is never stored or run, so nobody
+else can trigger them. A friend who wants out asks you.
+
+- `/reg forget <QQ>` shows what's stored about that person. `/reg forget <QQ> confirm`
+  erases it: their messages (and search index, labels, traces), memory about
+  them and evidence quoting them, conversation summaries they were in, the
+  relationship record and their names, plus their events in the local raw dumps
+  and their lines in saved bench recordings. Bench HTML reports (they show message
+  text) are deleted; `/reg bench` makes a new one. It can't be undone. Memory runs that
+  held their words lose their undo snapshot. Add `stop` to also stop recording them.
+  `/reg mem forget ...` works the same.
+- `/reg optout <QQ>` / `/reg optin <QQ>`: stop or resume recording someone. Opting
+  out doesn't erase what's already stored; use forget for that.
+- `/reg pause [group]` / `/reg resume [group]`: no group means all watched groups.
+  While paused nothing is stored or acted on, except recalls: a message recorded
+  before the pause and recalled during it is still blanked. Saved in the plugin
+  config as `paused_group_ids`, so a restart keeps it.
+
+If a local file can't be cleaned (say a broken saved recording), forget stops
+before touching the database and tells you which file; fix or delete it and send
+the same command again. With `stop`, recording stops right away either way.
+
+Memory keeps who said each quote, so forget still finds someone's words after
+their messages have aged out (30 days). Undo for a memory run only works while
+the messages it cites are still within retention.
+
+Debug bundles you already made are redacted (ids hashed, text masked) and aren't
+touched by forget; delete the `debug/` folder yourself if you want them gone.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`
