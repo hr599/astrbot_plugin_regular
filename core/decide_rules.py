@@ -178,6 +178,8 @@ def decide_m2(m: Msg, context: list[Msg], now: int, *, aliases: tuple[str, ...] 
     react_lean *= mult
     reasons["chime"] = round(chime, 3)
     over_share = st.bot_share() >= P["share_cap"]
+    # what may still happen here, whoever settles it (M2b: the model can't lift a cap)
+    reasons["allowed"] = ["quiet", "react"] if over_share else ["quiet", "react", "reply"]
     if chime >= P["reply_chime"] and not over_share:
         return Decision("reply", score, kind, {**reasons, "rule": "chime_in"}, POLICY)
     if max(chime, react_lean) >= P["react_chime"]:
