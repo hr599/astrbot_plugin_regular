@@ -407,6 +407,38 @@ class DreamTest(unittest.TestCase):
                     self.assertTrue(res["rejected"][0][2].startswith("corroborate: retire"))
                 self.tearDown()
 
+    # ---------------------------------------------------------------- issue #15
+    def test_merge_only_true_duplicates(self):
+        a = self.say("alice", "我不想聊前任")
+        b = self.say("bob", "我在学日语")
+        b2 = self.say("bob", "日语在学 N3")
+        apply([self.add("boundary", "alice不想聊前任", [self.ev(a)]),
+               self.add("self_disclosure", "在学日语", [self.ev(b)], subject="bob"),
+               self.add("self_disclosure", "学日语中", [self.ev(b2)], subject="bob")], self.ctx())
+        ids = {r["text"]: r["claim_id"] for r in self.claims()}
+        before = self.claims()
+        ev_before = self.store.db.execute("SELECT claim_id, msg_id FROM evidence ORDER BY msg_id").fetchall()
+        for op, why in ((Op("merge", claim_id=ids["在学日语"], merge_ids=[ids["alice不想聊前任"]]), "same type"),
+                        (Op("merge", claim_id=ids["alice不想聊前任"], merge_ids=[ids["alice不想聊前任"]]), "itself"),
+                        (Op("merge", claim_id=ids["在学日语"], merge_ids=[ids["学日语中"], ids["学日语中"]]), "distinct"),
+                        (Op("merge", claim_id=ids["在学日语"], merge_ids=[]), "distinct")):
+            with self.subTest(why=why):
+                res = apply([op], self.ctx())
+                self.assertEqual(res["applied"], 0)
+                self.assertIn(why, res["rejected"][0][2])
+        self.assertEqual(self.claims(), before)
+        self.assertEqual([tuple(r) for r in self.store.db.execute(
+            "SELECT claim_id, msg_id FROM evidence ORDER BY msg_id")], [tuple(r) for r in ev_before])
+        # the legitimate one still works, and undoes cleanly
+        run = apply([Op("merge", claim_id=ids["在学日语"], merge_ids=[ids["学日语中"]])], self.ctx())
+        self.assertEqual(run["applied"], 1)
+        self.assertEqual({r["text"]: r["status"] for r in self.claims()}["学日语中"], "retired")
+        # a retired source can't be merged again
+        res = apply([Op("merge", claim_id=ids["在学日语"], merge_ids=[ids["学日语中"]])], self.ctx())
+        self.assertIn("already retired", res["rejected"][0][2])
+        revert(self.store, run["run_id"])
+        self.assertEqual(self.claims(), before)
+
     # ---------------------------------------------------------------- apply / revert
     def claims(self):
         return [dict(r) for r in self.store.db.execute(

@@ -51,15 +51,19 @@ def _shingles(s: str, n: int) -> set[str]:
     return {s[i:i + n] for i in range(len(s) - n + 1)}
 
 
-def leaked(text: str, protected: list[str], n: int = LEAK_RUN) -> list[str]:
+def leaked(text: str, protected: list[str], n: int = LEAK_RUN, allowed: list[str] = ()) -> list[str]:
     """Runs of n+ characters copied from the protected texts (persona, guardrails,
-    injected memory block). Whitespace and width differences don't hide a copy."""
+    injected memory block). Whitespace and width differences don't hide a copy.
+    allowed: lines meant to be said (the persona's examples); a run that lies
+    wholly inside one of them doesn't count, one that spans into the text around
+    it does."""
     if not protected:
         return []
     prot: set[str] = set()
     for p in protected:
         prot |= _shingles(p, n)
-    hits = sorted(_shingles(text, n) & prot)
+    ok = [re.sub(r"\s+", "", normalize(a)) for a in allowed]
+    hits = sorted(s for s in _shingles(text, n) & prot if not any(s in a for a in ok))
     return hits[:5]
 
 
@@ -309,7 +313,7 @@ class VoiceDecision:
     hits: list[Hit] = field(default_factory=list)
 
 
-def check(draft: str, *, protected: list[str] = (), canaries: list[str] = (),
+def check(draft: str, *, protected: list[str] = (), canaries: list[str] = (), allowed: list[str] = (),
           context: str = "", attempt: int = 0, sincere_ai: bool = False,
           group_p90_len: int | None = None, rules: dict[str, Any] | None = None,
           rng: random.Random | None = None) -> VoiceDecision:
@@ -320,7 +324,7 @@ def check(draft: str, *, protected: list[str] = (), canaries: list[str] = (),
         safety.append(Hit("command_prefix", normalize(draft).strip()[:20]))
     if has_canary(draft, list(canaries)):
         safety.append(Hit("canary", "harness canary in output"))
-    for s in leaked(draft, list(protected)):
+    for s in leaked(draft, list(protected), allowed=list(allowed)):
         safety.append(Hit("leak", s))
     if safety:
         return VoiceDecision("dodge" if attempt == 0 else "drop", hits=safety)

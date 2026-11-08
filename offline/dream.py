@@ -107,6 +107,24 @@ def check_target(op: Op, ctx: Ctx):
     if op.object is not None and op.object != c["object_id"]:
         return Verdict("shape", "object doesn't match the target")
     op.type, op.subject, op.object = c["type"], c["subject_id"], c["object_id"]
+    if op.kind == "merge":
+        # only true duplicates fold together: same type and the same people, both
+        # still live, never a claim into itself (issue #15: Alice's boundary could be
+        # retired into Bob's self_disclosure, its quotes moved under his card)
+        if c["status"] == "retired":
+            return Verdict("shape", "merge target is retired")
+        if not op.merge_ids or len(set(op.merge_ids)) != len(op.merge_ids):
+            return Verdict("shape", "merge needs distinct source claims")
+        for mid in op.merge_ids:
+            if mid == op.claim_id:
+                return Verdict("shape", "a claim can't be merged into itself")
+            src = ctx.claim(mid)
+            if src is None:
+                return Verdict("shape", "merge source not found in this scope")
+            if src["status"] == "retired":
+                return Verdict("shape", f"merge source {mid} is already retired")
+            if (src["type"], src["subject_id"], src["object_id"]) != (c["type"], c["subject_id"], c["object_id"]):
+                return Verdict("shape", f"merge source {mid} isn't the same type about the same people")
     return None
 
 
