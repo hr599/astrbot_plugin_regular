@@ -1,7 +1,6 @@
-"""Sending. M0 never sends to groups; only the admin DM reply goes out.
-
-From M2 this uses platform.get_client().api.call_action(...) directly, because
-context.send_message drops the message id we need to record the bot's own
+"""Sending. Admin DM replies go through the event; group messages (task L, only
+when send_mode is "on") go through the platform's OneBot client directly,
+because context.send_message drops the message id we need to record 阿灯's own
 messages and to handle recalls of them.
 """
 
@@ -15,3 +14,19 @@ async def reply_admin_dm(event, text: str) -> None:
     if event.get_group_id():
         raise RuntimeError("refusing to send an admin reply into a group")
     await event.send(MessageChain().message(text))
+
+
+async def send_group_text(context, platform_id: str, group_id: str, text: str):
+    """One plain-text message to a group; returns LLBot's message id (or None).
+    Text only: segments a model wrote never become CQ codes or other markup."""
+    inst = context.get_platform_inst(platform_id)
+    if inst is None:
+        raise RuntimeError(f"platform {platform_id!r} not found")
+    client = inst.get_client()
+    ret = await client.call_action(
+        "send_group_msg", group_id=int(group_id),
+        message=[{"type": "text", "data": {"text": text}}],
+    )
+    if isinstance(ret, dict):
+        return ret.get("message_id")
+    return None

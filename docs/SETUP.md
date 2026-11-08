@@ -212,6 +212,30 @@ traces (`bot_loop`, `bot_daily_cap`, `rate_limited`) and on the bench. The bot
 rules need 阿灯's own messages, which are recorded once sending lands, so live
 they start biting then; the bench sees them now.
 
+## Sending (task L)
+
+Off by default. The plugin setting `send_mode` (or `/reg send off|dry|on` from
+your DM) switches it:
+
+- `off`: nothing is sent or queued.
+- `dry`: everything runs except the actual send: each part is checked, timed
+  and logged as a trace (`ended_at=send`, length only), nothing reaches QQ.
+- `on`: parts go out through LLBot and are stored as 阿灯's own messages, so
+  quotes of them are recognised and the bot-loop and per-bot limits work live.
+
+Before M2 has a reply model, the only thing that sends is the test command
+`/reg say <group> <text>` (admin DM only). Your words are checked for safety:
+nothing that starts like a command (/ ! # in any width, even after splitting
+into parts), no leaked persona text or canaries. Style isn't checked, since
+they're your words. Every group also has a hard cap of 20 messages in any hour,
+counted from what was really sent (it survives restarts). Switching to `off` or
+pausing the group stops a message between parts.
+
+Suggested first check: `/reg send dry`, `/reg say <group> 测试一下～ 马上就好`,
+then `/reg debug` (two `send` traces, nothing in the group). Then `/reg send on`
+and the same `/reg say`; 阿灯 should post two short messages a few seconds
+apart. `/reg send off` afterwards until M2.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`

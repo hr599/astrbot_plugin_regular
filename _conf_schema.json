@@ -44,5 +44,16 @@
     "type": "list",
     "hint": "阿灯可以和它们聊，但有防刷屏限制：同一个机器人不连回两次、每天有上限、中间没有真人时不接龙。它们说的话不进记忆、不算关系。不填的话阿灯分不清机器人和真人。",
     "default": []
+  },
+  "send_mode": {
+    "description": "发送模式",
+    "type": "string",
+    "options": [
+      "off",
+      "dry",
+      "on"
+    ],
+    "default": "off",
+    "hint": "off = 不发；dry = 只记录会发什么、什么时候发，不真发；on = 真发。也可以私聊 /reg send off|dry|on 切换。M2 之前只有 /reg say 会发。"
   }
 }

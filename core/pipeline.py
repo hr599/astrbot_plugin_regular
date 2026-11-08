@@ -62,7 +62,9 @@ class Pipeline:
         reset with the process."""
         st = self._limits.get(scope_id)
         if st is None:
-            since = (limits.day_of(now) * 86400) - 8 * 3600  # start of today, UTC+8
+            # today (for per-bot counts) and at least the burst window, which can
+            # reach back past midnight (issue #17)
+            since = min((limits.day_of(now) * 86400) - 8 * 3600, now - limits.SPAM_WINDOW_S)
             past = [m for m in stored_moments(self.store, scope_id, since, now, bot_uids=self.gate_cfg.bot_uids)
                     if m.msg_id != current]
             st = self._limits[scope_id] = LimitState.from_moments(past)
@@ -110,6 +112,23 @@ class Pipeline:
         if from_bot:
             out["from_bot"] = True  # bots never feed relationship records or memory
         return out
+
+    def record_own(self, job, part: str, native_id, ts: int, dry: bool, platform: str) -> None:
+        """What 阿灯 said (task L). Dry runs leave a trace only. Real sends are stored
+        as its own messages, under the id LLBot returned, so quotes of them are
+        recognised, recalls work, and the limits see them (bot-loop rule, per-bot cap)."""
+        reasons = {"origin": job.origin, "dry": dry, "part_len": len(part), "reply_to": job.reply_to}
+        msg_id = None
+        if not dry:
+            self.store.scope(job.scope_id, platform, "group")
+            msg_id = f"{job.scope_id}:{native_id}" if native_id is not None else f"{job.scope_id}:sent-{ts}"
+            self.store.add_message(msg_id=msg_id, scope_id=job.scope_id, person_id=None, ts=ts,
+                                   text=part, reply_to=job.reply_to, is_bot=True)
+            st = self._limit_state(job.scope_id, ts, msg_id)
+            st.observe(Msg(msg_id=msg_id, ts=ts, sender="阿灯", text=part, is_bot=True))
+        self.store.trace(scope_id=job.scope_id, msg_id=msg_id, ended_at="send",
+                         decision="dry_run" if dry else "sent", reasons=reasons,
+                         harness_version=HARNESS_VERSION, ts=ts)
 
     def handle(self, ev: ChatEvent) -> Outcome:
         verdict = gate(ev, self.gate_cfg)

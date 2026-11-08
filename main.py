@@ -1,12 +1,14 @@
 """astrbot_plugin_regular: a group regular for one QQ friends group.
 
-M0 (this version): watch and log only. It never speaks in the group, and it
-stops every event so nothing falls through to AstrBot's default LLM or to
-other plugins' commands.
+It watches and logs, decides in shadow, and stops every event so nothing falls
+through to AstrBot's default LLM or to other plugins' commands. Sending exists
+behind an off switch (send_mode, default off); before M2 the only thing that
+sends is the admin's /reg say test command.
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from pathlib import Path
 
@@ -16,7 +18,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 
 from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
-from .adapter.outbound import reply_admin_dm
+from .adapter.outbound import reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
 from .bench.situations import forget_sender
@@ -24,6 +26,7 @@ from .core.admin import AdminCommands
 from .core.decide import DEFAULT_ALIASES
 from .core.gate import GateConfig
 from .core.labeling import Labeler
+from .core.outbox import Outbox, SendAdmin, deliver
 from .core.people_admin import PeopleAdmin
 from .core.pipeline import HARNESS_VERSION, Pipeline
 from .services.debug import RawDumper, build_bundle
@@ -58,6 +61,9 @@ class Regular(Star):
         self.aliases = tuple(
             str(a).strip() for a in (config.get("bot_aliases") or DEFAULT_ALIASES) if str(a).strip()
         ) or DEFAULT_ALIASES
+        self.outbox = Outbox(str(config.get("send_mode", "off") or "off"))
+        self._seed_send_cap()
+        self._tasks: set[asyncio.Task] = set()
         self.admin = AdminCommands(
             self._status, self._debug_bundle, self._set_dump,
             labeler=Labeler(self.store, aliases=self.aliases,
@@ -67,6 +73,9 @@ class Regular(Star):
                                              bot_uids=self.gate_cfg.bot_uids),
             people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
                                save_paused=self._save_paused, forget_files=self._forget_files),
+            sender=SendAdmin(self.outbox, watched=lambda: self.gate_cfg.group_ids,
+                             paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
+                             scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}"),
         )
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases)
         self._refresh_opt_outs()
@@ -92,6 +101,7 @@ class Regular(Star):
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
             if out.admin_reply:
                 await reply_admin_dm(event, out.admin_reply)
+            self._start_queued()
         except Exception:
             logger.exception("[regular] pipeline error (event stopped, nothing sent)")
         finally:
@@ -125,7 +135,8 @@ class Regular(Star):
             "cleanup": "running hourly" if self.janitor.running else "NOT running",
             "version": VERSION,
             "harness": HARNESS_VERSION,
-            "mode": "observe-only (never speaks); decide runs in shadow",
+            "mode": "decide runs in shadow; sending: " + self.outbox.mode
+                    + (" (only /reg say sends before M2)" if self.outbox.mode != "off" else ""),
             "uptime_min": (int(time.time()) - self.started) // 60,
             "groups_watched": len(self.gate_cfg.group_ids),
             "groups_paused": len(self.gate_cfg.paused_groups & self.gate_cfg.group_ids),
@@ -154,6 +165,43 @@ class Regular(Star):
         except Exception:
             logger.exception("[regular] could not persist raw_dump setting")
 
+    # ---- sending (task L) -------------------------------------------------
+    def _seed_send_cap(self) -> None:
+        """The hourly group cap counts what was really sent, across restarts."""
+        hour_ago = int(time.time()) - 3600
+        by_scope: dict[str, list[int]] = {}
+        for r in self.store.db.execute("SELECT scope_id, ts FROM messages WHERE is_bot=1 AND ts>=?", (hour_ago,)):
+            by_scope.setdefault(r["scope_id"], []).append(r["ts"])
+        for scope_id, times in by_scope.items():
+            self.outbox.seed(scope_id, times)
+
+    def _start_queued(self) -> None:
+        while self.outbox.queue:
+            job = self.outbox.queue.popleft()
+            task = asyncio.create_task(self._deliver(job))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
+
+    async def _deliver(self, job) -> None:
+        platform = job.scope_id.split(":", 1)[0]
+        try:
+            result = await deliver(
+                job, self.outbox,
+                send=lambda gid, text: send_group_text(self.context, platform, gid, text),
+                record=lambda j, part, mid, ts, dry: self.pipeline.record_own(j, part, mid, ts, dry, platform),
+                paused=lambda: self.gate_cfg.paused_groups, clock=time.time, sleep=asyncio.sleep,
+            )
+            logger.info(f"[regular] send {job.origin} -> {len(job.parts)} part(s): {', '.join(result)}")
+        except Exception:
+            logger.exception("[regular] send failed")
+
+    def _save_send_mode(self, mode: str) -> None:
+        self.config["send_mode"] = mode
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("[regular] could not persist send_mode")
+
     def _save_paused(self, paused: set[str]) -> None:
         self.config["paused_group_ids"] = sorted(paused)
         try:
@@ -180,5 +228,7 @@ class Regular(Star):
             logger.info(f"[regular] retention: removed {n} old messages")
 
     async def terminate(self):
+        for t in list(self._tasks):
+            t.cancel()
         await self.janitor.stop()
         self.store.close()
