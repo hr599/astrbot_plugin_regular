@@ -183,6 +183,7 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
     n = apply_answers(runs, jobs, answers)
     model = evaluate(runs)  # at the default cuts
     cuts, fitted = fit(runs, jobs, answers)
+    apply_answers(runs, jobs, answers, cuts)  # leave the runs at the chosen cuts (#29 review: capped count)
     hist = {k: [sum(1 for a in answers if a is not None and a[i] == v) for v in range(10)]
             for i, k in enumerate(("react", "reply"))}
     res = {"when": time.strftime("%Y-%m-%d %H:%M"), "version": dm.VERSION, "uncertain": total,

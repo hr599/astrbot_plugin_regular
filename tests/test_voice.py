@@ -205,3 +205,33 @@ class ShapingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Issue13Tests(unittest.TestCase):
+    """issue #13: which day stays apart from 上午/下午; equal values in other forms; ranges are hedges."""
+
+    def v(self, draft, context):
+        from core.voice import check, load_rules
+        return check(draft, context=context, rules=load_rules()).verdict
+
+    def test_which_day_counts(self):
+        self.assertEqual(self.v("今晚八点见", "明晚八点见"), "rewrite")
+        self.assertEqual(self.v("明天下午三点", "今天下午三点"), "rewrite")
+        self.assertEqual(self.v("今晚八点见", "八点见"), "send")        # context doesn't say which day
+        self.assertEqual(self.v("明天下午三点", "明天下午3点"), "send")
+        self.assertEqual(self.v("下午三点", "三点"), "send")
+
+    def test_equal_numbers_in_other_forms(self):
+        self.assertEqual(self.v("温度是12.0度", "温度是12度"), "send")
+        self.assertEqual(self.v("涨了12.50%", "涨了12.5%"), "send")
+        self.assertEqual(self.v("零下12度", "12度"), "rewrite")          # the sign still matters
+        self.assertEqual(self.v("涨了12%", "涨了12"), "rewrite")         # and so does %
+
+    def test_ranges_are_hedges(self):
+        from core.voice import made_up_specifics
+        for d in ("三四点吧", "大概五六十块", "下午两三点", "十来块", "一个半小时", "俩钟头", "二十多个人", "九点多"):
+            with self.subTest(d=d):
+                self.assertEqual(made_up_specifics(d, ""), [])
+        for d in ("三点", "五十块", "二十三号"):  # exact values are still checked
+            with self.subTest(d=d):
+                self.assertTrue(made_up_specifics(d, ""))

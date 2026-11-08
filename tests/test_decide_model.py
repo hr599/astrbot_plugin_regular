@@ -207,6 +207,23 @@ class FitTests(unittest.TestCase):
         self.assertNotIn("boom", json.dumps(last) + out)  # the message itself is never kept
 
 
+class Review29Tests(unittest.TestCase):
+    def test_capped_count_uses_the_chosen_cuts(self):
+        import bench.model_bench as mb
+        h = ([Msg(f"b{i}", E + i, "bot", "嗯", is_bot=True) for i in range(3)]
+             + [Msg(f"h{i}", E + 10 + i * 30, "ABC"[i], "今天好热") for i in range(3)])
+        rec = Recording("cap", "saved", h + [Msg("t1", E + 200, "D", "哈哈哈")],
+                        {"t1": {"addressed": False, "should": "react"}})
+        runs, jobs = collect([rec], load_params(), ("阿灯",))
+        answers = [(0, 9)]
+        cuts, _ = mb.fit(runs, jobs, answers)
+        mb.apply_answers(runs, jobs, answers, cuts)
+        want = len(list(mb._capped(runs)))
+        mb.apply_answers(runs, jobs, answers, (10, 10))  # what fit used to leave behind
+        self.assertEqual(len(list(mb._capped(runs))), 0)
+        self.assertEqual(want, 1 if cuts[1] <= 9 else 0)
+
+
 class Review28Tests(unittest.TestCase):
     def test_model_cant_lift_the_share_cap(self):
         from bench.model_bench import apply_answers

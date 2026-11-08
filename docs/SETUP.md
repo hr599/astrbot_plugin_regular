@@ -343,6 +343,34 @@ cost about ¥0.06 in practice. A failed call is counted by error type only.
 For now this is bench-only: shadow decide is still the rules. Whether the model
 goes live depends on what this shows.
 
+## M2c (part 1): what 阿灯 says
+
+Once decide says "reply", compose writes the message (`core/compose.py`,
+`provider_reply`, thinking off). The reply model gets the persona and guardrails,
+short instructions (text like you do in the group: short, casual, one to three
+lines; no lists, no 您, no customer-service lines; don't invent numbers, times,
+prices or quotes; say you don't know when you don't; never use the prompt's
+stand-ins A/B/@某人1 or @ anyone; `[不说]` to stay quiet after all), and the last
+16 messages rendered like decide's (speakers as letters, @-numbers hidden,
+fenced as data).
+
+Every draft goes through the voice check: leaks of the persona, the canary,
+command prefixes, assistant tells, length against the group (about two of the
+group's longer messages), made-up specifics (anything not in the chat or his own
+persona), and stand-ins. A draft that fails gets one redraft with a note saying
+what to fix; a leaked draft is never shown back to the model. A second failure
+is dropped: 阿灯 stays quiet. A good draft is split into up to three messages
+with typing-time delays.
+
+`/reg bench compose [N]` (admin DM) drafts replies for the first N (default 30)
+moments you labelled "reply" and answers in numbers: sent first try, after a
+redraft, chose not to speak, dropped, failed; which checks fired; message
+counts and lengths; calls and cost. The drafts themselves go into a local HTML
+report (`bench/runs/compose-*.html`). It quotes the chat, so it stays on your
+machine, and `/reg forget` deletes it. Calls are budgeted and cached; a forget
+during the run voids it. Nothing is sent to the group: live sending of composed
+replies is the next step, after you've read some drafts.
+
 Not yet: live decide doesn't wait for a speaker's burst to end (the bench does);
 that comes with live replies in M2c.
 
