@@ -178,6 +178,14 @@ else can trigger them. A friend who wants out asks you.
   before the pause and recalled during it is still blanked. Saved in the plugin
   config as `paused_group_ids`, so a restart keeps it.
 
+If a local file can't be cleaned (say a broken saved recording), forget stops
+before touching the database and tells you which file; fix or delete it and send
+the same command again. With `stop`, recording stops right away either way.
+
+Memory keeps who said each quote, so forget still finds someone's words after
+their messages have aged out (30 days). Undo for a memory run only works while
+the messages it cites are still within retention.
+
 Debug bundles you already made are redacted (ids hashed, text masked) and aren't
 touched by forget; delete the `debug/` folder yourself if you want them gone.
 

@@ -25,13 +25,13 @@ class PeopleAdmin:
         *,
         watched: Callable[[], set[str]],
         save_paused: Callable[[set[str]], None],
-        forget_files: Callable[[str, str], dict[str, int]] | None = None,
+        forget_files: Callable[[str, str | None], dict[str, Any]] | None = None,
     ):
         self.store = store
         self.gate_cfg = gate_cfg
         self.watched = watched  # configured group ids
         self.save_paused = save_paused  # persist the paused set (plugin config)
-        self.forget_files = forget_files  # (uid, sender key) -> {"raw": n, "recordings": n}
+        self.forget_files = forget_files  # (uid, person id or None) -> {"raw", "recordings", "broken"}
 
     def handle(self, sub: str, args: list[str], platform: str) -> str | None:
         if sub == "forget":
@@ -59,16 +59,40 @@ class PeopleAdmin:
                     f"确认删除：/reg forget {uid} confirm"
                     f"{'' if stop else '（以后也不想记录他就再加 stop）'}"
                     + (f"\n（这次会加 stop）" if stop else ""))
+        # 1. stop recording first, so it holds whatever happens below (PR #12 review)
+        if stop:
+            self.store.set_opted_out(platform, uid, True)
+            self.gate_cfg.opted_out_uids = self.store.opted_out_uids()
+        # 2. local files before the database: the person id that finds their lines in
+        #    saved recordings only exists until step 3, so a failure here must leave
+        #    the database untouched for a clean retry. Raw dumps are matched by QQ
+        #    number, so they're cleaned even if the database never had a row for them
+        #    (someone who only sent commands or notices).
+        pid = self.store.person_id_of(platform, uid)
+        files: dict[str, Any] = {}
+        if self.forget_files:
+            try:
+                files = self.forget_files(uid, str(pid) if pid is not None else None)
+            except Exception as e:  # noqa: BLE001 - report, keep the database for a retry
+                return (f"清理本地文件时出错（{type(e).__name__}: {e}），数据库还没动。"
+                        + ("已经设为不再记录。" if stop else "") + f"处理好后重发 /reg forget {uid} confirm"
+                        + (" stop" if stop else "") + "。")
+        if files.get("broken"):
+            return (f"这些 bench 存档读不了：{', '.join(files['broken'])}。可能有 {uid} 的内容，"
+                    f"数据库还没动。修好或删掉这些文件后重发 /reg forget {uid} confirm"
+                    + (" stop" if stop else "") + "。" + ("（已经设为不再记录。）" if stop else ""))
+        # 3. the database, in one transaction
         res = self.store.forget_person(platform, uid, stop=stop)
-        files = self.forget_files(uid, str(res["person_id"])) if self.forget_files and res["found"] else {}
         self.gate_cfg.opted_out_uids = self.store.opted_out_uids()
+        raw = files.get("raw", 0)
         if not res["found"]:
-            return f"没有 {uid} 的记录。" + (" 已设为不记录。" if stop else "")
+            return (f"数据库里没有 {uid} 的记录。" + (f"本地原始事件删了 {raw} 条。" if raw else "")
+                    + (" 已设为不再记录。" if stop else ""))
         lines = [f"已删除 {uid}：{res['messages']} 条消息、{res['claims']} 条记忆、{res['episodes']} 段对话摘要。"]
         if res["dream_runs_frozen"]:
             lines.append(f"{res['dream_runs_frozen']} 次记忆整理的快照一并清掉了（这几次不能再撤销）。")
-        if files.get("raw") or files.get("recordings"):
-            lines.append(f"本地文件：原始事件 {files.get('raw', 0)} 条、bench 存档 {files.get('recordings', 0)} 条。")
+        if raw or files.get("recordings"):
+            lines.append(f"本地文件：原始事件 {raw} 条、bench 存档 {files.get('recordings', 0)} 条。")
         lines.append("以后不再记录他。" if res["opted_out"] else "以后他说话还会照常记录（不想的话：/reg optout " + uid + "）。")
         lines.append("已经生成过的调试包是脱敏的（ID 哈希、文字打码），不受影响；需要的话自己删 debug 文件夹。")
         return "\n".join(lines)

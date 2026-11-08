@@ -75,7 +75,8 @@ class PeopleAdminTests(unittest.TestCase):
                 """INSERT INTO claims (scope_id, subject_id, type, text, status, source, created,
                      last_evidence, run_id) VALUES (?,?,?,?,'validated','self',?,?,?)""",
                 (SCOPE, subject, type_, text, self.t, self.t, run)).lastrowid
-            db.execute("INSERT INTO evidence VALUES (?,?,?,'supports')", (cid, msg, quote))
+            db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,'supports')",
+                       (cid, msg, quote))
             return cid
 
         r1 = db.execute("INSERT INTO dream_runs (scope_id, started, diff_json) VALUES (?,?,'[]')",
@@ -132,6 +133,32 @@ class PeopleAdminTests(unittest.TestCase):
         self.say("我回来了", FRIEND)
         self.assertEqual(self.count("SELECT COUNT(*) FROM messages WHERE text='我回来了'"), 1)
 
+    # ---------------------------------------------------------------- PR #12 review
+    def test_forget_after_retention_still_finds_their_quotes(self):
+        fp, op_ = self.seed_memory()
+        self.s.purge_before(self.t + 10_000)  # every transcript row is past retention
+        self.assertEqual(self.count("SELECT COUNT(*) FROM messages"), 0)
+        # undo snapshots and rejected proposals citing purged messages don't outlive them
+        blobs = " ".join(r[0] for r in self.s.db.execute("SELECT diff_json FROM dream_runs"))
+        self.assertNotIn("他养猫", blobs)
+        self.assertEqual(self.count("SELECT COUNT(*) FROM rejected"), 0)
+        # memory itself does outlive them, with the author kept
+        self.assertEqual(self.count("SELECT COUNT(*) FROM evidence WHERE author_id=?", fp), 2)
+        self.s.forget_person("aiocqhttp", FRIEND)
+        quotes = [r[0] for r in self.s.db.execute("SELECT quote FROM evidence")]
+        self.assertEqual(quotes, ["我养了只猫"])  # OTHER's own words stay
+        self.assertEqual([r[0] for r in self.s.db.execute("SELECT text FROM claims")], ["养猫"])
+
+    def test_forget_removes_traces_naming_them(self):
+        self.say("hi", FRIEND)
+        fp = self.s.person_id_of("aiocqhttp", FRIEND)
+        for reasons in ({"actor": fp, "is_add": True}, {"signals": {"answers": fp}}, {"actor": fp + 1}):
+            self.s.trace(scope_id=SCOPE, msg_id=None, ended_at="gate", decision=None,
+                         reasons=reasons, harness_version="t", ts=self.t)
+        self.s.forget_person("aiocqhttp", FRIEND)
+        left = [json.loads(r[0]) for r in self.s.db.execute("SELECT reasons FROM traces WHERE msg_id IS NULL")]
+        self.assertEqual(left, [{"actor": fp + 1}])
+
     def test_forget_with_stop_opts_out(self):
         self.say("hi", FRIEND)
         out = self.reg(f"/reg mem forget {FRIEND} confirm stop").admin_reply  # design-doc spelling works too
@@ -187,6 +214,98 @@ class PeopleAdminTests(unittest.TestCase):
         self.assertEqual(self.cfg.paused_groups, set())
 
 
+class ForgetFilesTests(unittest.TestCase):
+    """forget with real local files (PR #12 review)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.s = Store(d / "r.db")
+        self.cfg = GateConfig(group_ids={GROUP})
+        self.dumper = RawDumper(d / "raw", enabled=True)
+        self.rec_dir = d / "recordings"
+
+        def files(uid, sender):
+            n, broken = forget_sender(self.rec_dir, sender) if sender else (0, [])
+            return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken}
+
+        self.people = PeopleAdmin(self.s, self.cfg, watched=lambda: self.cfg.group_ids,
+                                  save_paused=lambda p: None, forget_files=files)
+        self.p = Pipeline(self.s, self.cfg, admin_handler=AdminCommands(lambda: {}, lambda: "", lambda o: None,
+                                                                        people=self.people))
+        self.t = int(time.time()) - 100
+
+    def tearDown(self):
+        self.s.close()
+        self.tmp.cleanup()
+
+    def feed(self, raw):
+        out = self.p.handle(ev(raw))
+        if out.action != "drop":
+            self.dumper.write(raw)
+        return out
+
+    def reg(self, text):
+        return self.p.handle(ev(dm(text), admin=True)).admin_reply
+
+    def test_raw_cleaned_even_without_a_person_row(self):
+        self.feed(group_msg("/签到", uid=OTHER, mid=1, ts=self.t))  # command: no people row, but dumped
+        self.assertIsNone(self.s.person_id_of("aiocqhttp", OTHER))
+        self.assertEqual(len(self.dumper.tail()), 1)
+        out = self.reg(f"/reg forget {OTHER} confirm")
+        self.assertIn("原始事件删了 1 条", out)
+        self.assertEqual(self.dumper.tail(), [])
+
+    def test_broken_recording_leaves_db_for_a_retry_and_stop_holds(self):
+        self.feed(group_msg("我的话", uid=FRIEND, mid=1, ts=self.t))
+        save(from_store(self.s, SCOPE), self.rec_dir)
+        (self.rec_dir / "zz-broken.json").write_text("{not json", encoding="utf-8")
+        out = self.reg(f"/reg forget {FRIEND} confirm stop")
+        self.assertIn("zz-broken.json", out)
+        self.assertIn("数据库还没动", out)
+        # stop took effect at once: new messages aren't recorded
+        self.feed(group_msg("还在吗", uid=FRIEND, mid=2, ts=self.t + 5))
+        self.assertEqual([r[0] for r in self.s.db.execute("SELECT text FROM messages")], ["我的话"])
+        self.assertEqual(self.cfg.opted_out_uids, {FRIEND})
+        # fix the file, retry: everything goes, including the saved recording's lines
+        (self.rec_dir / "zz-broken.json").unlink()
+        out = self.reg(f"/reg forget {FRIEND} confirm stop")
+        self.assertIn("已删除", out)
+        self.assertEqual(self.s.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 0)
+        self.assertNotIn("我的话", next(self.rec_dir.glob("*.json")).read_text(encoding="utf-8"))
+        self.assertEqual(self.cfg.opted_out_uids, {FRIEND})
+
+    def test_file_error_is_reported_not_raised(self):
+        self.feed(group_msg("我的话", uid=FRIEND, mid=1, ts=self.t))
+        self.people.forget_files = lambda uid, sender: (_ for _ in ()).throw(PermissionError("locked"))
+        out = self.reg(f"/reg forget {FRIEND} confirm stop")
+        self.assertIn("PermissionError", out)
+        self.assertEqual(self.cfg.opted_out_uids, {FRIEND})
+        self.assertEqual(self.s.db.execute("SELECT COUNT(*) FROM messages").fetchone()[0], 1)
+
+
+class MigrationTests(unittest.TestCase):
+    def test_v3_backfills_evidence_authors(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "r.db"
+            db = sqlite3.connect(path)
+            db.executescript(Path("services/schema.sql").read_text(encoding="utf-8") + "\nPRAGMA user_version=1;")
+            db.execute("INSERT INTO scopes VALUES (?, 'aiocqhttp', 'group', NULL, 0)", (SCOPE,))
+            db.execute("INSERT INTO people (person_id, platform, platform_uid, first_seen) VALUES (7, 'aiocqhttp', ?, 0)",
+                       (FRIEND,))
+            db.execute("INSERT INTO messages (msg_id, scope_id, person_id, ts, text) VALUES ('m1', ?, 7, 0, '我养猫')",
+                       (SCOPE,))
+            db.execute("""INSERT INTO claims (claim_id, scope_id, subject_id, type, text, status, source, created,
+                          last_evidence) VALUES (1, ?, 7, 'self_disclosure', '养猫', 'validated', 'self', 0, 0)""", (SCOPE,))
+            db.execute("INSERT INTO evidence VALUES (1, 'm1', '我养猫', 'supports')")
+            db.commit()
+            db.close()
+            s = Store(path)
+            self.assertEqual(s.db.execute("SELECT author_id FROM evidence").fetchone()[0], 7)
+            s.close()
+
+
 class FileScrubTests(unittest.TestCase):
     def test_raw_dump_forget(self):
         with tempfile.TemporaryDirectory() as d:
@@ -210,7 +329,7 @@ class FileScrubTests(unittest.TestCase):
             folder = Path(d) / "recordings"
             save(from_store(s, SCOPE), folder)
             pid = s.person_id_of("aiocqhttp", FRIEND)
-            self.assertEqual(forget_sender(folder, str(pid)), 1)
+            self.assertEqual(forget_sender(folder, str(pid)), (1, []))
             blob = next(folder.glob("*.json")).read_text(encoding="utf-8")
             self.assertNotIn("我的话", blob)
             self.assertIn("别人的话", blob)

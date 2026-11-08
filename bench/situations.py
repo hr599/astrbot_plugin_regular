@@ -95,21 +95,28 @@ def load_saved(folder: Path) -> list[Recording]:
             for p in sorted(folder.glob("*.json"))]
 
 
-def forget_sender(folder: Path, sender: str) -> int:
+def forget_sender(folder: Path, sender: str) -> tuple[int, list[str]]:
     """/reg forget: remove one person's messages (and their labels) from saved
-    recordings. sender is the store's person id as a string. Returns messages removed."""
-    removed = 0
+    recordings. sender is the store's person id as a string. Returns (messages
+    removed, files that couldn't be read), so one broken file doesn't stop the rest
+    and the caller can say which one to fix."""
+    removed, broken = 0, []
     if not folder.exists():
-        return 0
+        return 0, []
     for p in sorted(folder.glob("*.json")):
-        d = json.loads(p.read_text(encoding="utf-8"))
-        gone = {m["msg_id"] for m in d["messages"] if m.get("sender") == sender}
+        try:
+            d = json.loads(p.read_text(encoding="utf-8"))
+            msgs = d["messages"]
+        except (OSError, ValueError, KeyError, TypeError):
+            broken.append(p.name)
+            continue
+        gone = {m["msg_id"] for m in msgs if m.get("sender") == sender}
         if gone:
-            d["messages"] = [m for m in d["messages"] if m["msg_id"] not in gone]
+            d["messages"] = [m for m in msgs if m["msg_id"] not in gone]
             d["labels"] = {k: v for k, v in d.get("labels", {}).items() if k not in gone}
             p.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
             removed += len(gone)
-    return removed
+    return removed, broken
 
 
 # ---- synthetic fixtures ---------------------------------------------------------

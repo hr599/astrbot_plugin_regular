@@ -158,9 +158,9 @@ class Regular(Star):
         except Exception:
             logger.exception("[regular] could not persist paused_group_ids")
 
-    def _forget_files(self, uid: str, sender: str) -> dict[str, int]:
-        return {"raw": self.dumper.forget(uid),
-                "recordings": forget_sender(self.data_dir / "bench" / "recordings", sender)}
+    def _forget_files(self, uid: str, sender: str | None) -> dict:
+        n, broken = (forget_sender(self.data_dir / "bench" / "recordings", sender) if sender else (0, []))
+        return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken}
 
     def _retention_days(self) -> int:
         return max(1, int(self.config.get("transcript_retention_days", 30) or 30))
