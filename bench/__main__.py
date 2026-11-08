@@ -68,7 +68,7 @@ def main(argv=None) -> int:
     for r in runs:
         print(summary_line(r.recording.name, r.metrics))
     print("report:", write_report(runs, a.out, totals))
-    return 0 if totals["explicit_missed"] == 0 else 1
+    return 0 if all(v for v in totals["gates"].values() if isinstance(v, bool)) else 1
 
 
 if __name__ == "__main__":
