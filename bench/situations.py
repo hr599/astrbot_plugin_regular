@@ -105,8 +105,12 @@ def load_fixture(path: Path) -> Recording:
      "at_bot": false, "quote": "m0", "poke_bot": false, "bot": false, "from_bot": false,
      "label": {"addressed": false, "should": "quiet", "tags": ["heavy"]}}
     `t` is seconds from the fixture's start; the fake clock starts at a fixed
-    Saturday 21:00 UTC+8 so time-of-day policies get a stable evening."""
+    Saturday 21:00 UTC+8 so time-of-day policies get a stable evening.
+    Alternatively a line can give its own clock: "day": n (days after that
+    Saturday) and "time": "HH:MM[:SS]" (UTC+8), for chats where the hour matters
+    (a 02:40 low moment, late-night banter)."""
     base = 1793451600  # 2026-10-31 21:00 UTC+8
+    midnight = base - 21 * 3600
     msgs, labels, bot_ids = [], {}, set()
     for i, line in enumerate(path.read_text(encoding="utf-8").splitlines()):
         line = line.strip()
@@ -117,8 +121,13 @@ def load_fixture(path: Path) -> Recording:
         if d.get("bot"):
             bot_ids.add(mid)
         kind = "poke" if d.get("poke_bot") or d.get("poke") else "message"
+        if "time" in d:
+            hh, mm, *ss = (int(x) for x in str(d["time"]).split(":"))
+            ts = midnight + int(d.get("day", 0)) * 86400 + hh * 3600 + mm * 60 + (ss[0] if ss else 0)
+        else:
+            ts = base + int(d.get("t", i * 20))
         msgs.append(Msg(
-            msg_id=mid, ts=base + int(d.get("t", i * 20)), sender=d.get("from", "?"),
+            msg_id=mid, ts=ts, sender=d.get("from", "?"),
             text=d.get("text", "[戳一戳]" if kind == "poke" else ""), kind=kind,
             mentions_bot=bool(d.get("at_bot")), reply_to=d.get("quote"),
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),

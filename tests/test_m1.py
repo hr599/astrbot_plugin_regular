@@ -333,6 +333,30 @@ class ReviewRound2Tests(unittest.TestCase):
                     self.assertEqual(lab["should"], "reply", f"{r.name}:{x.msg_id}")
 
 
+class SyntheticReviewFixtureTests(unittest.TestCase):
+    def setUp(self):
+        self.rec = next(r for r in load_fixtures() if r.name == "synthetic_review_v1")
+
+    def test_loads_with_own_clock(self):
+        crisis = next(m for m in self.rec.messages if m.msg_id == "C07-03")
+        self.assertEqual(time.strftime("%H:%M", time.gmtime(crisis.ts + 8 * 3600)), "02:41")
+        ts = [m.ts for m in self.rec.messages]
+        self.assertEqual(ts, sorted(ts))  # one conversation per day, in order
+
+    def test_counts_and_roles(self):
+        self.assertEqual(len(self.rec.messages), 163)
+        self.assertEqual(len(self.rec.labels), 154)
+        self.assertTrue(any(m.from_bot for m in self.rec.messages))
+        self.assertTrue(all(self.rec.labels.get(m.msg_id) is None for m in self.rec.messages if m.is_bot))
+
+    def test_regenerates_identically(self):
+        import subprocess
+        import sys
+        before = Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes()
+        subprocess.run([sys.executable, "tools/make_review_fixture.py"], check=True, capture_output=True)
+        self.assertEqual(Path("bench/fixtures/synthetic_review_v1.jsonl").read_bytes(), before)
+
+
 class NameAddressTests(unittest.TestCase):
     def test_name_is_likely_not_forced(self):
         d = decide(m("阿灯 你觉得呢"), [], 0)
@@ -347,8 +371,8 @@ class BenchTests(unittest.TestCase):
         for r in recs:
             run = replay(r)
             self.assertEqual(run.metrics["explicit_missed"], 0, r.name)
-            self.assertEqual(run.metrics["labeled"], len(r.labels) - sum(
-                1 for k in r.labels if any(x.msg_id == k and x.is_bot for x in r.messages)))
+            people = {x.msg_id for x in r.messages if not x.is_bot and x.kind == "message"}
+            self.assertEqual(run.metrics["labeled"], sum(1 for k in r.labels if k in people))
 
     def test_replay_is_deterministic(self):
         r = load_fixtures()[0]
