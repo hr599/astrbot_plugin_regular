@@ -596,6 +596,29 @@ class BenchTests(unittest.TestCase):
         fx = replay(load_fixtures()[0]).metrics  # fixtures aren't split
         self.assertEqual((fx["labeled"], fx["held_out"]), (fx["labeled_dev"], None))
 
+    def test_implied_rates_undo_the_label_sampling(self):
+        from bench.splits import is_test
+        # 100 plain messages (tier C) and 20 questions (tier B); /reg label over-samples B
+        msgs, labels = [], {}
+        i = 0
+        while len([m for m in msgs if m.text == "吃了"]) < 100 or len([m for m in msgs if m.text == "去哪？"]) < 20:
+            text = "吃了" if len([m for m in msgs if m.text == "吃了"]) < 100 else "去哪？"
+            msgs.append(Msg(f"x{i}", 1000 + i, "a", text))
+            i += 1
+        dev = [m for m in msgs if not is_test(m.msg_id)]
+        for m in [m for m in dev if m.text == "吃了"][:5]:
+            labels[m.msg_id] = {"addressed": False, "should": "quiet"}
+        qs = [m for m in dev if m.text == "去哪？"][:10]
+        for k, m in enumerate(qs):
+            labels[m.msg_id] = {"addressed": False, "should": "reply" if k % 2 else "react"}
+        imp = replay(Recording("live", "store", msgs, labels)).metrics["implied"]
+        self.assertEqual(imp["labelled_raw_act_rate"], round(10 / 15, 3))  # the sample says 67%
+        self.assertAlmostEqual(imp["act_rate_unaddressed"], 20 / 120, places=3)  # the chat says 17%
+        self.assertEqual(imp["reply_share"], round(10 / 130, 3))  # 10 replies among 120 + 10 messages
+        self.assertEqual(imp["tiers"]["C"]["labels"], 5)
+        # fixtures (hand-built scenes, not a sample of real chat) get no estimate
+        self.assertIsNone(replay(Recording("f", "fixture", msgs, labels)).metrics["implied"])
+
     # PR #4 review: CLI must score with the same aliases as the live bot and /reg bench
     def test_cli_and_dm_agree_with_custom_alias(self):
         with tempfile.TemporaryDirectory() as d:

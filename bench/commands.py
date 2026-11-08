@@ -30,6 +30,12 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
     if m["labeled"]:
         s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}）：判断对象 准 {_pct(m['addressed_precision'])} / "
               f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}")
+        imp = m.get("implied")
+        if imp:
+            s += (f"\n  按你的标注推算（纠正抽样偏差）：阿灯回复约占群消息 {_pct(imp['reply_share'])}，"
+                  f"每条人类消息约 {_pct(imp['react_rate'])} 会点表情"
+                  f"（没被叫时会有反应 {_pct(imp['act_rate_unaddressed'])} ±{_pct(imp['act_rate_se'])}，"
+                  f"标注样本里是 {_pct(imp['labelled_raw_act_rate'])}）")
         h = m.get("held_out")
         if h:
             s += f"\n  留出的 {h['labeled']} 条：动作一致 {_pct(h['action_agreement'])}"
@@ -89,7 +95,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
-            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags",
+            "action_agreement", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
     return {
         "file": runs[-1].name,

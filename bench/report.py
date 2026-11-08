@@ -77,6 +77,13 @@ def _metric_rows(m: dict, source: str) -> str:
             hv = held.get(k)
             txt += "  ·  held out: " + ("n/a" if hv is None else f"{hv:.0%}")
         row(k.replace("_", " "), txt)
+    imp = m.get("implied")
+    if imp:
+        row("your labels imply: 阿灯's replies as a share of chat (target set from this)",
+            f"{imp['reply_share']:.1%}" if imp["reply_share"] is not None else "n/a")
+        row("your labels imply: reactions per human message", f"{imp['react_rate']:.1%}")
+        row("unaddressed moments it would act on (corrected / raw labelled sample)",
+            f"{imp['act_rate_unaddressed']:.0%} ± {imp['act_rate_se']:.0%}  /  {imp['labelled_raw_act_rate']:.0%}")
     if m.get("expects"):
         row("bot-loop breaks (hard gate: 0)", m["bot_loop_breaks"], m["bot_loop_breaks"] == 0)
         for e, d in sorted(m["expects"].items()):
