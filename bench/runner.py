@@ -49,6 +49,10 @@ def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
     return run
 
 
+def is_direct(m: Msg) -> bool:
+    return (m.mentions_bot or m.reply_to_bot or m.poke_bot) and not m.from_bot and not m.is_bot
+
+
 def _ratio(a: int, b: int) -> float | None:
     return round(a / b, 3) if b else None
 
@@ -62,9 +66,11 @@ def score(run: Run) -> dict[str, Any]:
     pokes = [s for s in run.steps if s.msg.kind == "poke"]
     speaks = [s for s in people + pokes if s.decision.action != "quiet"]
 
-    # hard gate: no explicit address (@, quote of the bot, poke) may go unanswered
-    explicit = [s for s in run.steps if s.msg.mentions_bot or s.msg.reply_to_bot or s.msg.poke_bot]
-    missed = [s.msg.msg_id for s in explicit if s.decision.action == "quiet"]
+    # hard gate: a direct address (@, quote of the bot, poke) from a person always gets a
+    # *reply* (decide.py's contract); a reaction alone counts as missed (PR #4 review,
+    # round 2). Other bots are outside the gate: their loop limits can rightly hold a reply.
+    explicit = [s for s in run.steps if is_direct(s.msg)]
+    missed = [s.msg.msg_id for s in explicit if s.decision.action != "reply"]
 
     lab_all = [s for s in people if s.label is not None]
     split = run.recording.source != "fixture"

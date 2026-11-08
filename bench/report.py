@@ -12,7 +12,7 @@ import json
 import time
 from pathlib import Path
 
-from .runner import Run
+from .runner import Run, is_direct
 
 _CSS = """
 body{font:14px/1.45 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;margin:24px;color:#1d1d1f;background:#fafaf9}
@@ -87,7 +87,7 @@ def _step_rows(run: Run) -> str:
     for s in run.steps:
         m, d, lab = s.msg, s.decision, s.label
         miss = False
-        if (m.mentions_bot or m.reply_to_bot or m.poke_bot) and d.action == "quiet":
+        if is_direct(m) and d.action != "reply":
             miss = True
         if lab is not None and lab["should"] != d.action:
             miss = True

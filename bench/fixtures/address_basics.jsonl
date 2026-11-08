@@ -3,7 +3,7 @@
 {"id": "a2", "t": 30, "from": "阿杰", "text": "我可以 九点后", "label": {"addressed": false, "should": "quiet"}}
 {"id": "a3", "t": 60, "from": "小王", "text": "@我 你来不来", "at_bot": true, "label": {"addressed": true, "should": "reply"}}
 {"id": "b1", "t": 90, "from": "阿灯", "text": "来 但我只会拖后腿", "bot": true}
-{"id": "a4", "t": 120, "from": "阿杰", "text": "哈哈哈 没事", "quote": "b1", "label": {"addressed": true, "should": "react"}}
+{"id": "a4", "t": 120, "from": "阿杰", "text": "哈哈哈 没事", "quote": "b1", "label": {"addressed": true, "should": "reply"}}
 {"id": "a5", "t": 150, "poke_bot": true, "from": "小雨"}
 {"id": "a6", "t": 180, "from": "小雨", "text": "阿灯 你最近在忙啥", "label": {"addressed": true, "should": "reply"}}
 {"id": "a7", "t": 210, "from": "小王", "text": "灯，你那个船模拟器修好没", "label": {"addressed": true, "should": "reply"}}

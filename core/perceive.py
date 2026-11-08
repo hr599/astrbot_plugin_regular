@@ -72,6 +72,11 @@ def _is_sticker_image(d: dict) -> bool:
     return str(d.get("summary") or "").strip() in ("[动画表情]", "[表情]")
 
 
+def is_command_like(text: str) -> bool:
+    """/, ! or # followed by letters (the design doc's definition)."""
+    return bool(_COMMAND_PREFIX.match(text or ""))
+
+
 def injection_flags(text: str) -> list[str]:
     found = []
     for name, pat in _INJECTION_PATTERNS:
@@ -133,7 +138,7 @@ def perceive(ev: ChatEvent, *, name_of=None) -> Perceived:
         reply_to_bot=bool(reply_to) and bool(ev.self_id) and ev.reply_sender_uid == ev.self_id,
         mentions=mentions,
         mentions_bot=mentions_bot,
-        is_command_like=bool(_COMMAND_PREFIX.match(ev.raw_text)),
+        is_command_like=is_command_like(ev.raw_text),
         injection_flags=injection_flags(text),
         media_kinds=media,
         image_subtypes=image_subtypes,

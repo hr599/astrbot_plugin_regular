@@ -13,6 +13,8 @@ from pathlib import Path
 
 from bench.__main__ import aliases_from_config, main as bench_main
 from bench.commands import bench_command, latest_summary
+from bench.report import write_report
+from bench.runner import is_direct, merge
 from bench.splits import is_test
 from bench.runner import replay
 from bench.situations import Recording, from_store, load_fixtures, load_saved, save
@@ -276,6 +278,59 @@ class CommandLikeTests(unittest.TestCase):
             self.assertEqual([r["text"] for r in st.recent(SCOPE)], ["hello"])
             self.assertEqual(st.search(SCOPE, "help me"), [])
             st.close()
+
+
+class ReviewRound2Tests(unittest.TestCase):
+    """PR #4 review, round 2."""
+
+    def test_upgrade_rejudges_old_command_flags(self):
+        # a v1 db as M0 wrote it: M0's rule also flagged "." and "。" openers
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "regular.db"
+            db = sqlite3.connect(path)
+            db.executescript(Path("services/schema.sql").read_text(encoding="utf-8") + "\nPRAGMA user_version=1;")
+            db.execute("INSERT INTO scopes (scope_id, platform, kind) VALUES (?,?,?)", (SCOPE, "llbot", "group"))
+            rows = [(".NET 项目更新了", 1), ("。。。好吧", 1), ("/help 我", 1), ("#签到", 1), ("普通聊天内容", 0)]
+            for i, (t, c) in enumerate(rows):
+                cur = db.execute("INSERT INTO messages (msg_id, scope_id, ts, text, is_command_like) VALUES (?,?,?,?,?)",
+                                 (f"{SCOPE}:{i}", SCOPE, i, t, c))
+                db.execute("INSERT INTO messages_fts (rowid, text) VALUES (?,?)", (cur.lastrowid, t))
+            db.commit()
+            db.close()
+            st = Store(path)
+            kept = {r["text"]: r["is_command_like"] for r in st.recent(SCOPE)}
+            self.assertEqual(kept, {".NET 项目更新了": 0, "。。。好吧": 0, "普通聊天内容": 0})
+            self.assertEqual(len(st.search(SCOPE, "项目更新")), 1)  # still searchable
+            self.assertEqual(st.search(SCOPE, "help 我"), [])
+            st.close()
+
+    def _react_only(self, msg, ctx, now, **kw):
+        d = decide(msg, ctx, now, **kw)
+        if d.action == "reply":
+            d.action = "react"
+        return d
+
+    def test_reaction_to_direct_address_is_missed(self):
+        msgs = [Msg("1", 0, "a", "@我", mentions_bot=True), Msg("2", 1, "b", "哈", reply_to_bot=True),
+                Msg("3", 2, "c", "[戳一戳]", kind="poke", poke_bot=True)]
+        run = replay(Recording("t", "fixture", msgs), policy=self._react_only)
+        self.assertEqual((run.metrics["explicit"], run.metrics["explicit_missed"]), (3, 3))
+        self.assertFalse(run.metrics["gates"]["explicit_never_missed"])
+        with tempfile.TemporaryDirectory() as d:
+            html = write_report([run], Path(d), merge([run])).read_text(encoding="utf-8")
+        self.assertEqual(html.count("<tr class='miss speak'>"), 3)  # highlighted as misses
+
+    def test_other_bots_outside_the_gate(self):
+        msgs = [Msg("1", 0, "小橘", "哈哈", reply_to_bot=True, from_bot=True)]
+        run = replay(Recording("t", "fixture", msgs), policy=lambda m, c, n, **k: decide(Msg("q", 0, "x", ""), c, n))
+        self.assertEqual(run.metrics["explicit"], 0)
+
+    def test_fixture_labels_follow_the_contract(self):
+        for r in load_fixtures():
+            for x in r.messages:
+                lab = r.labels.get(x.msg_id)
+                if lab and is_direct(x):
+                    self.assertEqual(lab["should"], "reply", f"{r.name}:{x.msg_id}")
 
 
 class NameAddressTests(unittest.TestCase):

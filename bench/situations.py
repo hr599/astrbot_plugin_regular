@@ -102,7 +102,7 @@ FIXTURE_DIR = Path(__file__).with_name("fixtures")
 def load_fixture(path: Path) -> Recording:
     """One JSON object per line:
     {"id": "m1", "t": 0, "from": "小王", "text": "...",
-     "at_bot": false, "quote": "m0", "poke_bot": false, "bot": false,
+     "at_bot": false, "quote": "m0", "poke_bot": false, "bot": false, "from_bot": false,
      "label": {"addressed": false, "should": "quiet", "tags": ["heavy"]}}
     `t` is seconds from the fixture's start; the fake clock starts at a fixed
     Saturday 21:00 UTC+8 so time-of-day policies get a stable evening."""
@@ -122,7 +122,7 @@ def load_fixture(path: Path) -> Recording:
             text=d.get("text", "[戳一戳]" if kind == "poke" else ""), kind=kind,
             mentions_bot=bool(d.get("at_bot")), reply_to=d.get("quote"),
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),
-            is_bot=bool(d.get("bot")),
+            is_bot=bool(d.get("bot")), from_bot=bool(d.get("from_bot")),
         ))
         if "label" in d:
             lab = dict(d["label"])

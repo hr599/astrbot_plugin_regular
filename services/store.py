@@ -12,6 +12,11 @@ import time
 from pathlib import Path
 from typing import Any
 
+try:  # inside the plugin package
+    from ..core.perceive import is_command_like as _is_command_like
+except ImportError:  # repo root on sys.path (tests, CLI)
+    from core.perceive import is_command_like as _is_command_like
+
 SCHEMA_VERSION = 2
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
@@ -63,16 +68,29 @@ class Store:
                 self.drop_command_like()
 
     def drop_command_like(self) -> int:
-        rows = self.db.execute("SELECT rowid, msg_id, text FROM messages WHERE is_command_like=1").fetchall()
-        for r in rows:
+        """Delete stored command-like messages, judged by the *current* rule.
+
+        M0's flag also covered "." and "。" (".NET 项目更新了" was flagged), which the
+        design doc counts as chat. So each old candidate is re-judged on its text:
+        real commands are deleted (row, search index, media), the rest are kept and
+        their stale flag cleared (PR #4 review, round 2). Text is the rendered form,
+        so a borderline case is kept rather than deleted."""
+        rows = self.db.execute(
+            "SELECT rowid, msg_id, text FROM messages WHERE is_command_like=1"
+        ).fetchall()
+        drop = [r for r in rows if _is_command_like(r["text"])]
+        keep = [r for r in rows if not _is_command_like(r["text"])]
+        for r in drop:
             if r["text"]:
                 self.db.execute(
                     "INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', ?, ?)",
                     (r["rowid"], r["text"]),
                 )
             self.db.execute("DELETE FROM message_media WHERE msg_id=?", (r["msg_id"],))
-        self.db.execute("DELETE FROM messages WHERE is_command_like=1")
-        return len(rows)
+            self.db.execute("DELETE FROM messages WHERE rowid=?", (r["rowid"],))
+        for r in keep:
+            self.db.execute("UPDATE messages SET is_command_like=0 WHERE rowid=?", (r["rowid"],))
+        return len(drop)
 
     def close(self) -> None:
         self.db.close()

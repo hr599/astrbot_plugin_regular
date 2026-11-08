@@ -44,7 +44,8 @@ class Msg:
     reply_to: str | None = None
     reply_to_bot: bool = False
     poke_bot: bool = False
-    is_bot: bool = False
+    is_bot: bool = False  # this bot (阿灯) said it
+    from_bot: bool = False  # another bot in the group said it
     media: list[str] = field(default_factory=list)
 
 
