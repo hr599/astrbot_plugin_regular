@@ -40,6 +40,11 @@ def is_admin_command(text: str) -> bool:
 
 
 def gate(ev: ChatEvent, cfg: GateConfig) -> GateVerdict:
+    # paused comes first, even before the bot's own messages, which the adapter
+    # otherwise raw-dumps (PR #12 review): a paused group records nothing but recalls
+    if ev.scope_kind != "dm" and ev.group_id in cfg.paused_groups \
+            and not (ev.kind == "notice" and ev.notice_type in RECALLS):
+        return GateVerdict("drop", "paused")
     if ev.self_id and ev.sender_uid == ev.self_id:
         return GateVerdict("drop", "own_message")
 
@@ -55,8 +60,6 @@ def gate(ev: ChatEvent, cfg: GateConfig) -> GateVerdict:
     # group
     if ev.group_id not in cfg.group_ids:
         return GateVerdict("drop", "group_not_watched")
-    if ev.group_id in cfg.paused_groups and not (ev.kind == "notice" and ev.notice_type in RECALLS):
-        return GateVerdict("drop", "paused")
     if ev.kind == "notice":
         return GateVerdict("notice", ev.notice_type or "notice")
     if ev.kind != "message":

@@ -211,6 +211,15 @@ class PeopleAdminTests(unittest.TestCase):
         self.say("after", FRIEND)
         self.assertEqual(self.count("SELECT COUNT(*) FROM messages"), 2)
 
+    def test_pause_beats_own_message(self):
+        # PR #12 review: own_message events are raw-dumped by the adapter, so pause must win
+        self.reg("/reg pause")
+        out = self.p.handle(ev(group_msg("我是阿灯", uid=BOT, mid=99, ts=self.t)))
+        self.assertEqual(out.reasons["gate"], "paused")
+        self.reg("/reg resume")
+        out = self.p.handle(ev(group_msg("我是阿灯", uid=BOT, mid=99, ts=self.t)))
+        self.assertEqual(out.reasons["gate"], "own_message")
+
     def test_pause_unknown_group_refused(self):
         self.assertIn("不在观察列表", self.reg("/reg pause 12345").admin_reply)
         self.assertEqual(self.cfg.paused_groups, set())
