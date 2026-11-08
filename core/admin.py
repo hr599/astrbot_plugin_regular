@@ -56,7 +56,8 @@ class AdminCommands:
             return f"原始事件记录已{'开启' if arg == 'on' else '关闭'}。"
         if sub == "label" and self.labeler is not None:
             rest = " ".join(words[1:])
-            return self.labeler.answer(rest) if rest else self.labeler.next()
+            who = f"{ev.platform}:{ev.sender_uid}"  # each admin's batch is their own
+            return self.labeler.answer(rest, who) if rest else self.labeler.next(who)
         if sub == "bench" and self.bench is not None:
             try:
                 return self.bench(words[1:])

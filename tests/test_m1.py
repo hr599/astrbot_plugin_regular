@@ -450,6 +450,66 @@ class GroupScopeTests(unittest.TestCase):
         self.assertEqual(len(s.group_scopes(None)), 3)
 
 
+class ReviewRound4Tests(unittest.TestCase):
+    """Limits accepted in PR #4's last review, fixed in a follow-up."""
+
+    def setUp(self):
+        self.s = Store(":memory:")
+        p = Pipeline(self.s, GateConfig(group_ids={GROUP}))
+        now = int(time.time())
+        for i in range(12):
+            p.handle(ev(group_msg(f"消息 {i}", mid=i + 1, ts=now - 200 + i * 10)))
+
+    @staticmethod
+    def _shown(reply: str) -> list[str]:
+        """The texts an admin was asked about, in order: the lines marked →."""
+        return [line.split(": ", 1)[1] for line in reply.splitlines() if line.startswith(" → ")]
+
+    def test_two_admins_interleaved(self):
+        """Works only from what each admin saw in their DM, so it checks behavior."""
+        lab = Labeler(self.s, rng=random.Random(3))
+        admin = AdminCommands(lambda: {}, lambda: "", lambda on: None, labeler=lab)
+        A, B = "40004", "50005"
+        a_seen = self._shown(admin(ev(dm("/reg label", uid=A), admin=True)))
+        b_seen = self._shown(admin(ev(dm("/reg label", uid=B), admin=True)))
+        self.assertTrue(a_seen and b_seen)
+        self.assertFalse(set(a_seen) & set(b_seen))  # never the same message on two screens at once
+        admin(ev(dm("/reg label " + " ".join("1" * len(a_seen)), uid=A), admin=True))
+        by_text = {r["text"]: r["msg_id"] for r in self.s.messages_in(SCOPE)}
+        labels = self.s.labels()
+        self.assertEqual({t for t in by_text if by_text[t] in labels}, set(a_seen))  # exactly A's
+        admin(ev(dm("/reg label " + " ".join("5" * len(b_seen)), uid=B), admin=True))
+        labels = self.s.labels()
+        for t in a_seen:
+            self.assertEqual(labels[by_text[t]]["should"], "reply", t)
+        for t in b_seen:
+            self.assertEqual(labels[by_text[t]]["should"], "quiet", t)
+
+    def test_guide_once_per_admin(self):
+        lab = Labeler(self.s, rng=random.Random(0))
+        self.assertIn("标注说明", lab.next("a"))
+        self.assertIn("标注说明", lab.next("b"))
+        self.assertNotIn("标注说明", lab.next("a"))
+
+    def test_none_vs_empty_group_ids(self):
+        self.assertEqual(self.s.group_scopes(None), [SCOPE])
+        self.assertEqual(self.s.group_scopes(set()), [])
+        self.assertEqual(self.s.group_scopes([]), [])
+        self.assertEqual(self.s.group_scopes({GROUP}), [SCOPE])
+
+    def test_cleared_config_label_and_save(self):
+        cleared = set()  # group_ids emptied in the plugin config, same db
+        lab = Labeler(self.s, scopes=lambda: self.s.group_scopes(cleared))
+        self.assertIn("group_ids", lab.next())
+        self.assertEqual(lab.pending, [])
+        with tempfile.TemporaryDirectory() as d:
+            out = bench_command(self.s, Path(d), ["save"], group_ids=cleared)
+            self.assertIn("group_ids", out)
+            self.assertEqual(load_saved(Path(d) / "bench" / "recordings"), [])
+            out = bench_command(self.s, Path(d), [], group_ids=cleared)  # run still works
+            self.assertNotIn("live", out)  # no old group replayed as live
+
+
 class NameAddressTests(unittest.TestCase):
     def test_name_is_likely_not_forced(self):
         d = decide(m("阿灯 你觉得呢"), [], 0)

@@ -42,7 +42,8 @@ def bench_command(store, data_dir: Path, args: list[str], *,
 
     if args and args[0].lower() == "save":
         if not watched:
-            return "还没有群消息可以存。"
+            return ("没有可以存的群：group_ids 没有设置要观察的群。" if group_ids is not None and not group_ids
+                    else "还没有群消息可以存。")
         name = args[1] if len(args) > 1 else time.strftime("week-%Y%m%d")
         since = int(time.time()) - SAVE_DAYS * 86400
         lines = []

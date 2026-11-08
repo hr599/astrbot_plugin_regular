@@ -177,9 +177,11 @@ class Store:
     def group_scopes(self, group_ids=None) -> list[str]:
         """Scope ids of the watched groups (scope_id ends with ":<group id>"). Old
         scopes from groups no longer watched stay in the db but are left out
-        (PR #4 review, round 3). No group ids given -> every group scope."""
+        (PR #4 review, round 3). group_ids=None means "no filter" (every group
+        scope); an explicitly empty collection means "no groups" and returns []
+        (PR #4 review, round 4)."""
         all_ids = self.scope_ids("group")
-        if not group_ids:
+        if group_ids is None:
             return all_ids
         want = {str(g) for g in group_ids}
         return [s for s in all_ids if s.rsplit(":", 1)[-1] in want]

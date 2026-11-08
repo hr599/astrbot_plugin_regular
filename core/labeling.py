@@ -108,23 +108,33 @@ class Labeler:
         self.rng = rng or random.Random()
         self.context = context
         self.batch = batch
-        self.pending: list[str] = []  # msg_ids of the batch on screen, in order
-        self.shown_guide = False
+        # Each admin's batch is kept apart (keyed by platform + admin uid), so two admins
+        # labeling at once can never have one's answers land on the other's batch.
+        self._pending: dict[str, list[str]] = {}  # who -> msg_ids on their screen, in order
+        self._guided: set[str] = set()
+
+    @property
+    def pending(self) -> list[str]:
+        """The default (single-admin) batch; kept for callers that don't pass who."""
+        return self._pending.get("", [])
 
 
     def _line(self, r, mark: str) -> str:
         text = "[已撤回]" if r["recalled"] else r["text"]
         return f"{mark}{_hhmm(r['ts'])} {_name(r)}: {text}"
 
-    def next(self) -> str:
+    def next(self, who: str = "") -> str:
         scopes = self.scopes()
         if not scopes:
-            return "还没有记录到群消息。"
+            self._pending.pop(who, None)
+            return "没有可标注的群：要么还没记录到群消息，要么 group_ids 没有设置要观察的群。"
         # every watched group with candidates, not just the first one stored
-        cands = [r for sc in scopes for r in self.store.unlabeled(sc)]
+        # a message on another admin's screen isn't handed out twice (no last-write-wins)
+        held = {m for w, ids in self._pending.items() if w != who for m in ids}
+        cands = [r for sc in scopes for r in self.store.unlabeled(sc) if r["msg_id"] not in held]
         rows = pick(cands, self.rng, self.aliases, self.batch)
         multi = len({r["scope_id"] for r in rows}) > 1 or len(scopes) > 1
-        self.pending = [r["msg_id"] for r in rows]
+        self._pending[who] = [r["msg_id"] for r in rows]
         if not rows:
             return "没有待标注的消息了 👍"
         blocks = []
@@ -133,24 +143,25 @@ class Labeler:
             where = f" 群 {r['scope_id'].rsplit(':', 1)[-1]}" if multi else ""
             blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ")]))
         head = ""
-        if not self.shown_guide:
+        if who not in self._guided:
             head = GUIDE + "\n\n"
-            self.shown_guide = True
+            self._guided.add(who)
         n = self.store.stats()["labels"]
         return head + "\n\n".join(blocks) + f"\n\n{ANSWER_HINT}\n（已标 {n} 条）"
 
-    def answer(self, arg: str) -> str:
+    def answer(self, arg: str, who: str = "") -> str:
         if arg.strip().lower() in ("help", "说明"):
             return GUIDE + "\n\n" + ANSWER_HINT
-        if not self.pending:
+        pending = self._pending.get(who, [])
+        if not pending:
             return "现在没有待回答的题。发 /reg label 开始。"
         toks = parse_answers(arg)
         if toks is None:
             return "每条回 1-5 或 s，比如 /reg label 5 5 3 4 5"
-        if len(toks) != len(self.pending):
-            return f"这一批有 {len(self.pending)} 条，收到 {len(toks)} 个答案。请按顺序每条一个。"
+        if len(toks) != len(pending):
+            return f"这一批有 {len(pending)} 条，收到 {len(toks)} 个答案。请按顺序每条一个。"
         saved = skipped = gone = 0
-        for mid, t in zip(self.pending, toks):
+        for mid, t in zip(pending, toks):
             if not self.store.labelable(mid):  # recalled or expired since it was shown
                 gone += 1
                 continue
@@ -161,8 +172,8 @@ class Labeler:
                 addressed, should = CHOICES[t]
                 self.store.set_label(mid, addressed, should)
                 saved += 1
-        self.pending = []
+        self._pending.pop(who, None)
         note = f"记下 {saved} 条" + (f"，跳过 {skipped}" if skipped else "")
         if gone:
             note += f"，{gone} 条已撤回或过期，没有记"
-        return note + "。\n\n" + self.next()
+        return note + "。\n\n" + self.next(who)
