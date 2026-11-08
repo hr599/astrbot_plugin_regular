@@ -42,6 +42,20 @@ _PLACEHOLDER = {
 }
 
 
+def _is_sticker_image(d: dict) -> bool:
+    """QQ marks a sticker sent as an image with sub type 1.
+
+    The key differs by implementation: OneBot/NapCat use `sub_type`, LLBot 8.3.2
+    sends `subType` (found on the live account, Nov 8). When neither is present,
+    QQ's own summary text for stickers is the fallback.
+    """
+    for key in ("sub_type", "subType"):
+        v = d.get(key)
+        if v is not None and str(v).strip() != "":
+            return str(v).strip() == "1"
+    return str(d.get("summary") or "").strip() in ("[动画表情]", "[表情]")
+
+
 def injection_flags(text: str) -> list[str]:
     found = []
     for name, pat in _INJECTION_PATTERNS:
@@ -82,8 +96,7 @@ def perceive(ev: ChatEvent, *, name_of=None) -> Perceived:
             summary = str(d.get("summary") or "").strip("[]") or "表情包"
             parts.append(f"[表情包:{summary}]")
         elif k == "image":
-            # QQ marks stickers sent as images with sub_type 1 (unverified on LLBot: M0 check)
-            is_sticker = str(d.get("sub_type", "")) == "1"
+            is_sticker = _is_sticker_image(d)
             media.append("sticker" if is_sticker else "image")
             parts.append("[表情包]" if is_sticker else "[图片]")
         elif k == "file":

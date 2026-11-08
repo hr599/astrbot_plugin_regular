@@ -89,6 +89,17 @@ class PerceiveTests(unittest.TestCase):
         self.assertEqual(p.media_kinds, ["image", "sticker"])
         self.assertIn(ME, p.mentions)
 
+    def test_sticker_image_subtype_spellings(self):
+        def kind(data):
+            return perceive(ev(group_msg([{"type": "image", "data": data}]))).media_kinds
+        self.assertEqual(kind({"file": "a", "sub_type": 1}), ["sticker"])     # OneBot / NapCat
+        self.assertEqual(kind({"file": "a", "subType": 1}), ["sticker"])      # LLBot 8.3.2
+        self.assertEqual(kind({"file": "a", "subType": "1"}), ["sticker"])
+        self.assertEqual(kind({"file": "a", "subType": 0}), ["image"])
+        self.assertEqual(kind({"file": "a", "summary": "[动画表情]"}), ["sticker"])
+        self.assertEqual(kind({"file": "a", "subType": 0, "summary": "[动画表情]"}), ["image"])
+        self.assertEqual(kind({"file": "a"}), ["image"])
+
     def test_command_like(self):
         self.assertTrue(perceive(ev(group_msg("/help"))).is_command_like)
         self.assertTrue(perceive(ev(group_msg("#签到"))).is_command_like)
@@ -237,6 +248,8 @@ class ReviewRegressionTests(unittest.TestCase):
                 blob = z.read("raw_events.json").decode()
         for secret in ("private words", "hidden phrase", "md secret", '"hi"', "987654321"):
             self.assertNotIn(secret, blob)
+        self.assertEqual(redact({"type": "image", "data": {"subType": 1, "sub_type": 1}})["data"],
+                         {"subType": 1, "sub_type": 1})
         for shape in ('"json"', '"xml"', '"markdown"', '"reveal"', '"logged"'):
             self.assertIn(shape, blob)
 
