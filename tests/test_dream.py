@@ -306,6 +306,66 @@ class DreamTest(unittest.TestCase):
         revert(self.store, run["run_id"])
         self.assertEqual(authors(), sorted([self.p["bob"], self.p["carol"]]))
 
+    # ---------------------------------------------------------------- PR #11 review, round 3
+    def _eleven_plus_candidate(self):
+        m = self.say("bob", "alice是做芯片的")
+        apply([self.add("identity", "alice做芯片", [self.ev(m)])], self.ctx())
+        cand = self.claims()[0]["claim_id"]
+        for i in range(11):
+            mi = self.say("alice", f"我有第{i}个爱好")
+            apply([self.add("self_disclosure", f"爱好{i}", [self.ev(mi)])], self.ctx())
+        own = self.say("alice", "对 我是做芯片的")
+        new = self.say("alice", "我还喜欢爬山")
+        return cand, Op("reinforce", claim_id=cand, evidence=[self.ev(own)]), \
+            self.add("self_disclosure", "喜欢爬山", [self.ev(new)])
+
+    def test_caps_hold_in_either_order(self):
+        valid = lambda: self.store.db.execute(  # noqa: E731
+            "SELECT COUNT(*) FROM claims WHERE subject_id=? AND status='validated'", (self.p["alice"],)).fetchone()[0]
+        cand, reinforce, add = self._eleven_plus_candidate()
+        res = apply([reinforce, add], self.ctx())
+        self.assertEqual(valid(), 12)
+        self.assertEqual([r[2].split(":")[0] for r in res["rejected"]], ["caps"])
+
+    def test_caps_hold_add_first(self):
+        valid = lambda: self.store.db.execute(  # noqa: E731
+            "SELECT COUNT(*) FROM claims WHERE subject_id=? AND status='validated'", (self.p["alice"],)).fetchone()[0]
+        cand, reinforce, add = self._eleven_plus_candidate()
+        apply([add, reinforce], self.ctx())
+        self.assertEqual(valid(), 12)
+        self.assertEqual(self.store.db.execute("SELECT status FROM claims WHERE claim_id=?", (cand,)).fetchone()[0],
+                         "candidate")
+
+    def test_invalidated_old_evidence_doesnt_corroborate(self):
+        for how in ("recall", "optout"):
+            with self.subTest(how=how):
+                self.setUp()
+                m = self.say("bob", "alice是做芯片的")
+                apply([self.add("identity", "alice做芯片", [self.ev(m)])], self.ctx())
+                cid = self.claims()[0]["claim_id"]
+                if how == "recall":
+                    self.store.recall(m)
+                else:
+                    self.store.db.execute("UPDATE people SET opted_out=1 WHERE person_id=?", (self.p["bob"],))
+                c = self.say("carol", "alice做芯片吧")
+                apply([Op("reinforce", claim_id=cid, evidence=[self.ev(c)])], self.ctx())
+                st = self.store.db.execute("SELECT status FROM claims WHERE claim_id=?", (cid,)).fetchone()[0]
+                self.assertEqual(st, "candidate")  # only carol counts now
+                self.tearDown()
+
+    def test_old_human_quote_cant_carry_a_bot_message(self):
+        m = self.say("alice", "我在学日语")
+        apply([self.add("self_disclosure", "在学日语", [self.ev(m)])], self.ctx())
+        cid = self.claims()[0]["claim_id"]
+        b = self.say(None, "你不是在学日语嘛", bot=True)
+        self.assertEqual(self.first_fail(Op("reinforce", claim_id=cid, evidence=[self.ev(m), self.ev(b)])).check,
+                         "humans_only")
+        # same within one batch: the human quote is consumed by the first op
+        h = self.say("alice", "日语N2了")
+        res = apply([Op("reinforce", claim_id=cid, evidence=[self.ev(h)]),
+                     Op("reinforce", claim_id=cid, evidence=[self.ev(h), self.ev(b)])], self.ctx())
+        self.assertEqual([r[2].split(":")[0] for r in res["rejected"]], ["humans_only"])
+
     # ---------------------------------------------------------------- apply / revert
     def claims(self):
         return [dict(r) for r in self.store.db.execute(

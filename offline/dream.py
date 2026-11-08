@@ -196,7 +196,10 @@ def corroboration(type_: str, subject, object_, ev: list[Evidence], ctx: Ctx) ->
     for e in ev:
         uniq.setdefault(e.msg_id, e)
     rows = [(ctx.msg(e.msg_id), e) for e in uniq.values()]
-    rows = [(m, e) for m, e in rows if m is not None]
+    # evidence that's no longer valid counts for nothing: purged, recalled since,
+    # from someone who opted out since, a command, or another bot (PR #11 review)
+    rows = [(m, e) for m, e in rows if m is not None and not m["recalled"] and not m["opted_out"]
+            and not m["is_command_like"] and not (m["uid"] is not None and str(m["uid"]) in ctx.bot_uids)]
     humans = [m for m, _ in rows if not m["is_bot"]]
     distinct = {m["person_id"] for m in humans}
     sessions = {m["session_id"] for m in humans}
@@ -264,10 +267,17 @@ def check_reinforce(op: Op, ctx: Ctx):
     return None
 
 
+def _fresh(ctx: Ctx, op: Op) -> list[Evidence]:
+    have = {e.msg_id for e in _existing_support(ctx, op.claim_id)}
+    return [e for e in op.evidence if e.msg_id not in have]
+
+
 def check_humans_only(op: Op, ctx: Ctx):
-    """Only humans reinforce: the bot repeating a claim must not keep it alive."""
-    if op.kind == "reinforce" and all(ctx.msg(e.msg_id)["is_bot"] for e in op.evidence):
-        return Verdict("humans_only", "only the bot's own messages: bots don't reinforce")
+    """Only humans reinforce: the bot repeating a claim must not keep it alive. Judged
+    on the evidence that is actually new, so an already-cited human quote can't carry
+    a bot message along (PR #11 review)."""
+    if op.kind == "reinforce" and not any(not ctx.msg(e.msg_id)["is_bot"] for e in _fresh(ctx, op)):
+        return Verdict("humans_only", "no new human evidence: bots don't reinforce")
     return None
 
 
@@ -378,6 +388,12 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
             touched = [op.claim_id] + op.merge_ids if op.claim_id else []
             before = {cid: _snapshot(ctx.store, cid) for cid in touched}
             if op.kind == "add":
+                # re-check caps on the transaction's state: a promotion earlier in this
+                # batch may have used the last slot (PR #11 review)
+                cap = cap_reason(ctx, op.type, op.subject)
+                if cap:
+                    late.append((op, Verdict("caps", cap)))
+                    continue
                 cid = _insert_claim(ctx, op, "validated", run_id, None)
                 touched = [cid]
             elif op.kind == "reinforce":
@@ -387,6 +403,9 @@ def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
                     # an earlier op in this batch already cited it (PR #11 review): reject
                     # this one, keep the rest of the run
                     late.append((op, Verdict("duplicate", "evidence already cited earlier in this batch")))
+                    continue
+                if all(ctx.msg(e.msg_id)["is_bot"] for e in fresh):
+                    late.append((op, Verdict("humans_only", "no new human evidence after this batch")))
                     continue
                 cur = ctx.claim(op.claim_id)
                 # a candidate is promoted only if old + new evidence now meets its rule,
