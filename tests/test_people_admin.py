@@ -335,6 +335,23 @@ class FileScrubTests(unittest.TestCase):
             self.assertEqual(len(left), 1)
             self.assertNotIn("mine", json.dumps(left, ensure_ascii=False))
 
+    def test_raw_forget_keeps_file_age(self):
+        # PR #12 review: rewriting must not reset the retention clock for everyone else
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            dumper = RawDumper(Path(d), enabled=True, keep_days=3)
+            dumper.write(group_msg("mine", uid=FRIEND))
+            dumper.write(group_msg("theirs", uid=OTHER))
+            f = next(Path(d).glob("raw-*.jsonl"))
+            old = time.time() - 5 * 86400
+            os.utime(f, (old, old))
+            self.assertEqual(dumper.forget("99999"), 0)  # unrelated uid: untouched
+            self.assertEqual(int(f.stat().st_mtime), int(old))
+            self.assertEqual(dumper.forget(FRIEND), 1)  # real rewrite: age kept
+            self.assertEqual(int(f.stat().st_mtime), int(old))
+            dumper.prune()
+            self.assertFalse(f.exists())
+
     def test_saved_recordings_forget(self):
         with tempfile.TemporaryDirectory() as d:
             s = Store(Path(d) / "r.db")

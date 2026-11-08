@@ -9,6 +9,7 @@ bundle shows event *shapes* without anyone's words or QQ numbers.
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import time
 import zipfile
@@ -98,7 +99,9 @@ class RawDumper:
         uid, removed = str(uid), 0
         for p in sorted(self.folder.glob("raw-*.jsonl")):
             keep = []
-            for ln in p.read_text(encoding="utf-8").splitlines():
+            lines = p.read_text(encoding="utf-8").splitlines()
+            before = len(lines)
+            for ln in lines:
                 try:
                     raw = json.loads(ln).get("raw") or {}
                 except json.JSONDecodeError:
@@ -112,7 +115,13 @@ class RawDumper:
                     removed += 1
                 else:
                     keep.append(ln)
+            if len(keep) == before:
+                continue  # nothing of theirs in this file: leave it untouched
+            # keep the file's original time: retention prunes by mtime, so a rewrite
+            # must not give everyone else's old events a fresh lease (PR #12 review)
+            st = p.stat()
             p.write_text("".join(x + "\n" for x in keep), encoding="utf-8")
+            os.utime(p, (st.st_atime, st.st_mtime))
         return removed
 
     def tail(self, n: int = 300) -> list[dict[str, Any]]:
