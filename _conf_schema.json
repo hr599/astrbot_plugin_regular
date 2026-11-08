@@ -55,5 +55,53 @@
     ],
     "default": "off",
     "hint": "off = 不发；dry = 只记录会发什么、什么时候发，不真发；on = 真发。也可以私聊 /reg send off|dry|on 切换。M2 之前只有 /reg say 会发。"
+  },
+  "provider_decide": {
+    "description": "模型：判断要不要说话（deepseek-flash）",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+  },
+  "provider_reply": {
+    "description": "模型：写回复（deepseek-flash）",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+  },
+  "provider_caption": {
+    "description": "模型：看图（deepseek-flash）",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+  },
+  "provider_dream": {
+    "description": "模型：夜里整理记忆（deepseek-v4-pro）",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+  },
+  "provider_judge": {
+    "description": "模型：bench 评分，只离线用（gpt-6.1-terra）",
+    "type": "string",
+    "default": "",
+    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+  },
+  "budget_deepseek_monthly_cny": {
+    "description": "DeepSeek 每月预算（元）",
+    "type": "float",
+    "default": 50,
+    "hint": "按 1/30 变成每日上限，不结转。到上限后当天不再调用（阿灯安静）。花费是按 token 估算的，以 DeepSeek 后台账单为准，建议设得比真实预算略低。"
+  },
+  "budget_openai_monthly_usd": {
+    "description": "OpenAI 每月预算（美元）",
+    "type": "float",
+    "default": 30,
+    "hint": "只给 bench 评分用。同样按 1/30 变成每日上限。"
+  },
+  "usd_to_cny": {
+    "description": "美元兑人民币汇率",
+    "type": "float",
+    "default": 6.8,
+    "hint": "价格表是美元的，用这个换算成人民币来对比 DeepSeek 预算。"
   }
 }

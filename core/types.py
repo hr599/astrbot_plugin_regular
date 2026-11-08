@@ -68,4 +68,4 @@ class Outcome:
     stage: str  # where the turn ended: gate | perceive | admin
     action: str  # drop | logged | notice | admin
     reasons: dict[str, Any] = field(default_factory=dict)
-    admin_reply: str | None = None  # text for the admin's DM, if any
+    admin_reply: Any = None  # text for the admin's DM, or an AsyncReply (core/llm.py) to await

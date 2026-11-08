@@ -1,0 +1,18 @@
+{
+  "_source": "DeepSeek: api-docs.deepseek.com Models & Pricing as reported by several trackers, checked 2026-11-08 (deepseek-flash = V4.1 Flash since 2026-09-10; V4 Pro repriced 2026-08-16). GPT-6.1 Terra: OpenAI list price given in the design doc. USD per 1M tokens. Edit this file when prices change; the plugin reads it at startup.",
+  "peak": {
+    "_note": "DeepSeek bills double on weekdays 01:00-04:00 and 06:00-10:00 UTC (09-12 and 14-18 Beijing). Chinese public holidays are off-peak but not modelled here, so holiday estimates run high.",
+    "utc_hours": [1, 2, 3, 6, 7, 8, 9],
+    "weekdays": [0, 1, 2, 3, 4],
+    "multiplier": 2.0
+  },
+  "models": {
+    "deepseek-flash":   {"bucket": "deepseek", "input": 0.15, "cached": 0.003, "output": 0.60, "peak": true},
+    "deepseek-v4-pro":  {"bucket": "deepseek", "input": 0.66, "cached": 0.022, "output": 1.98, "peak": true},
+    "gpt-6.1-terra":    {"bucket": "openai",   "input": 1.00, "cached": 0.05,  "output": 5.00, "peak": false}
+  },
+  "buckets": {
+    "deepseek": {"currency": "CNY"},
+    "openai":   {"currency": "USD"}
+  }
+}

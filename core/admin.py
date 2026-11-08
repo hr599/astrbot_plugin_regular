@@ -20,6 +20,8 @@ HELP = (
     "/reg pause|resume [群号]  暂停 / 恢复观察（不写群号 = 全部）\n"
     "/reg send off|dry|on  发送开关（默认关；dry = 只记录不真发）\n"
     "/reg say <群号> <话>  让阿灯在群里说一句（测试发送用，只查安全不查风格）\n"
+    "/reg budget  看模型花费和每日上限\n"
+    "/reg model test <角色>  用一句话试一下某个角色的模型（decide/reply/caption/dream/judge）\n"
     "/reg help"
 )
 
@@ -34,6 +36,7 @@ class AdminCommands:
         bench: Callable[[list[str]], str] | None = None,
         people=None,
         sender=None,
+        models=None,
     ):
         self.status = status
         self.debug_bundle = debug_bundle
@@ -42,8 +45,9 @@ class AdminCommands:
         self.bench = bench
         self.people = people
         self.sender = sender
+        self.models = models
 
-    def __call__(self, ev) -> str:
+    def __call__(self, ev):  # -> str | AsyncReply
         words = ev.raw_text.strip().split()
         if words and words[0].lower() in ("/reg", "reg"):
             words = words[1:]
@@ -74,6 +78,10 @@ class AdminCommands:
                 return self.bench(words[1:])
             except Exception as e:
                 return f"bench 出错：{type(e).__name__}: {e}"
+        if self.models is not None:
+            out = self.models.handle(sub, [w.lower() for w in words[1:]])
+            if out is not None:
+                return out
         if self.sender is not None:
             out = self.sender.handle(sub, words[1:], ev.platform, ev.raw_text)
             if out is not None:

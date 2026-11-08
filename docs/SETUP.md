@@ -15,8 +15,12 @@ Clone into AstrBot's `data/plugins/`:
 
 ```
 cd <astrbot>/data/plugins
-git clone -b m0-skeleton https://github.com/hr599/astrbot_plugin_regular
+git clone https://github.com/hr599/astrbot_plugin_regular
 ```
+
+To update later: `git pull` in that folder (on `master`), then restart AstrBot or
+reload the plugin. Back up `data/plugin_data/astrbot_plugin_regular/regular.db`
+first; schema upgrades run automatically on start.
 
 Restart AstrBot (or reload plugins in the dashboard). In the plugin's config page:
 
@@ -235,6 +239,33 @@ Suggested first check: `/reg send dry`, `/reg say <group> 测试一下～ 马上
 then `/reg debug` (two `send` traces, nothing in the group). Then `/reg send on`
 and the same `/reg say`; 阿灯 should post two short messages a few seconds
 apart. `/reg send off` afterwards until M2.
+
+## Models and budget (task K)
+
+Nothing calls a model on its own yet (that's M2). This sets up the connection
+so it's ready, and lets you test each model once.
+
+1. In AstrBot, add the providers (API keys live only there):
+   - DeepSeek, OpenAI-compatible, base URL `https://api.deepseek.com`: one
+     provider with model `deepseek-flash`, one with `deepseek-v4-pro`.
+   - OpenAI: model `gpt-6.1-terra` (the bench judge; never used in the group).
+2. In this plugin's settings, put each provider's AstrBot ID under its role:
+   `provider_decide`, `provider_reply`, `provider_caption` -> the flash one;
+   `provider_dream` -> the v4-pro one; `provider_judge` -> the OpenAI one.
+   A blank role is never called. The plugin calls each provider's own
+   OpenAI-compatible client with an exact output limit per call, so providers
+   must be OpenAI-compatible (DeepSeek and OpenAI are), and the provider's
+   "custom extra body" setting is not applied to this plugin's calls.
+3. From your DM: `/reg model test reply` (and the other roles). Each sends one
+   tiny prompt and tells you the model, the reply, the time and the cost.
+4. `/reg budget` shows today's and this month's spend against the caps.
+
+Budgets: `budget_deepseek_monthly_cny` (50) and `budget_openai_monthly_usd` (30)
+become daily caps of 1/30 each, no carry-over, days in UTC+8. A call that could
+pass today's cap isn't made (阿灯 stays quiet). Costs are estimated from token
+counts and `harness/prices.json` (DeepSeek doubles on weekdays 09-12 and 14-18
+Beijing time); `usd_to_cny` converts the USD list prices. The DeepSeek console
+is the real bill, so set the cap a little under what you actually want to spend.
 
 ## Where data lives
 
