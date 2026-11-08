@@ -15,6 +15,7 @@ HELP = (
     "/reg label   标注一批消息（给 bench 当标准答案）；/reg label help 看说明\n"
     "/reg bench   用当前规则重放记录并打分\n"
     "/reg bench save [名字]  把最近的记录和标注存成一份 recording\n"
+    "/reg bench tune  用你的标注调 M2 规则的参数（只报数字）；tune apply 应用，tune reset 撤销\n"
     "/reg forget <QQ号>  删掉一个人的全部记录（先预览，再 confirm）\n"
     "/reg optout|optin <QQ号>  不再记录 / 恢复记录某人\n"
     "/reg pause|resume [群号]  暂停 / 恢复观察（不写群号 = 全部）\n"

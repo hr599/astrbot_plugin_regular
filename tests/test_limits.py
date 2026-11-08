@@ -93,7 +93,7 @@ class BeyondContextTests(unittest.TestCase):
         msgs = [human(i, at=True, dt=i) for i in range(limits.SPAM_MAX)]
         msgs += [human(100 + i, who=f"p{i}", dt=4) for i in range(30)]
         msgs.append(human(9, at=True, dt=34))
-        last = replay(Recording("burst", "fixture", msgs)).steps[-1].decision
+        last = replay(Recording("burst", "fixture", msgs), merge_turns=False).steps[-1].decision  # 1 s apart
         self.assertEqual((last.action, last.reasons["rule"], last.reasons["burst"]),
                          ("react", "rate_limited", limits.SPAM_MAX))
 

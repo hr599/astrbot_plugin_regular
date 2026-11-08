@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, POLICY_VERSION, Decision, Msg, decide, limits, tier_of
+from ._core import DEFAULT_ALIASES, M2_POLICY, POLICY_VERSION, Decision, Msg, decide, decide_m2, limits, tier_of
 from .situations import Recording
 from .splits import is_test
 
@@ -27,6 +27,7 @@ class Step:
     msg: Msg
     decision: Decision
     label: dict[str, Any] | None
+    merged: bool = False  # mid-burst: the turn's decision is shown here, counted once at its end
 
 
 @dataclass
@@ -38,21 +39,72 @@ class Run:
     params: dict[str, Any] = field(default_factory=dict)  # what the policy ran with
 
 
+PAUSE_S = 4  # design doc: decide waits until the speaker pauses (about 4 s, at most 15)
+TURN_MAX_S = 15
+
+
+def turns(messages: list[Msg]) -> list[list[int]]:
+    """Back-to-back messages from one person, each within PAUSE_S of the last and the
+    whole turn within TURN_MAX_S, nobody else in between, merge into one turn."""
+    out: list[list[int]] = []
+    for i, m in enumerate(messages):
+        if out and m.kind == "message" and not m.is_bot:
+            last = messages[out[-1][-1]]
+            first = messages[out[-1][0]]
+            if (last.kind == "message" and not last.is_bot and last.sender == m.sender and last.scene == m.scene
+                    and m.ts - last.ts <= PAUSE_S and m.ts - first.ts <= TURN_MAX_S):
+                out[-1].append(i)
+                continue
+        out.append([i])
+    return out
+
+
+def merged_msg(ms: list[Msg]) -> Msg:
+    """One turn as one moment: the last message, with the whole turn's text and any
+    @ / quote / media from any part of it."""
+    last = ms[-1]
+    if len(ms) == 1:
+        return last
+    return Msg(
+        msg_id=last.msg_id, ts=last.ts, sender=last.sender, text="\n".join(m.text for m in ms if m.text),
+        kind=last.kind, mentions_bot=any(m.mentions_bot for m in ms),
+        reply_to=next((m.reply_to for m in ms if m.reply_to), None),
+        reply_to_bot=any(m.reply_to_bot for m in ms), poke_bot=any(m.poke_bot for m in ms),
+        is_bot=last.is_bot, from_bot=last.from_bot, scene=last.scene,
+        media=[x for m in ms for x in (m.media or [])], mentions_other=any(m.mentions_other for m in ms),
+    )
+
+
 def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
-           aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str = POLICY_VERSION) -> Run:
-    steps, history = [], []
+           aliases: tuple[str, ...] = DEFAULT_ALIASES, policy_version: str | None = None,
+           params: dict[str, Any] | None = None, merge_turns: bool = True) -> Run:
+    """Replay a recording through a policy on its own timestamps. With merge_turns,
+    a burst from one person is decided once, after the pause (its last message);
+    its earlier messages show that decision but count once (Step.merged)."""
+    steps: list[Step] = []
+    history: list[Msg] = []
     scene = None
     state = limits.LimitState()  # limits see every moment, not just the last CONTEXT
-    for m in rec.messages:
-        if m.scene != scene:
+    kw: dict[str, Any] = {"aliases": aliases}
+    if policy is decide_m2:
+        kw["params"] = params
+    msgs = rec.messages
+    for idx in (turns(msgs) if merge_turns else [[i] for i in range(len(msgs))]):
+        first = msgs[idx[0]]
+        if first.scene != scene:
             # a new independent scenario: the policy must not see the previous one
             # (PR #5 review). Live recordings have no scenes, so this never fires there.
-            history, scene, state = [], m.scene, limits.LimitState()
-        d = policy(m, history[-CONTEXT:], m.ts, aliases=aliases, state=state)
-        steps.append(Step(m, d, rec.labels.get(m.msg_id)))
-        state.observe(m)
-        history.append(m)
-    run = Run(rec, policy_version, steps, params={"aliases": list(aliases)})
+            history, scene, state = [], first.scene, limits.LimitState()
+        turn = [msgs[i] for i in idx]
+        m = merged_msg(turn)
+        d = policy(m, history[-CONTEXT:], m.ts, state=state, **kw)
+        for j, part in enumerate(turn):
+            steps.append(Step(part, d, rec.labels.get(part.msg_id), merged=j < len(turn) - 1))
+        for part in turn:  # one decision per turn, but the limits and the room see every message
+            state.observe(part)  # (PR #26 review: a merged burst of @s is still 4 @s)
+        history.extend(turn)
+    version = policy_version or (M2_POLICY if policy is decide_m2 else POLICY_VERSION)
+    run = Run(rec, version, steps, params={"aliases": list(aliases)})
     run.metrics = score(run)
     return run
 
@@ -71,7 +123,7 @@ def score(run: Run) -> dict[str, Any]:
     and marked pending until M2 can be judged on what it says."""
     people = [s for s in run.steps if not s.msg.is_bot and s.msg.kind == "message"]
     pokes = [s for s in run.steps if s.msg.kind == "poke"]
-    speaks = [s for s in people + pokes if s.decision.action != "quiet"]
+    speaks = [s for s in people + pokes if s.decision.action != "quiet" and not s.merged]
 
     # hard gate: a direct address (@, quote of the bot, poke) from a person always gets a
     # *reply* (decide.py's contract); a reaction alone counts as missed (PR #4 review,
@@ -146,6 +198,9 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
     for s in lab:
         confusion[s.label["should"]][s.decision.action] += 1
     agree = sum(confusion[a][a] for a in confusion)
+    # mean of per-class recall over the classes you used: "quiet" is most labels, so
+    # plain agreement rewards a bot that never speaks; this doesn't (M2a tuning objective)
+    recalls = [confusion[a][a] / sum(confusion[a].values()) for a in confusion if sum(confusion[a].values())]
     spoke_label = sum(1 for s in lab if s.label["should"] != "quiet")
     spoke_both = sum(1 for s in lab if s.label["should"] != "quiet" and s.decision.action != "quiet")
     spoke_pred = sum(1 for s in lab if s.decision.action != "quiet")
@@ -153,6 +208,7 @@ def _label_stats(lab: list[Step]) -> dict[str, Any]:
         "addressed_precision": _ratio(tp, tp + fp),
         "addressed_recall": _ratio(tp, tp + fn),
         "action_agreement": _ratio(agree, len(lab)),
+        "balanced_accuracy": round(sum(recalls) / len(recalls), 3) if recalls else None,
         # of the moments you said a regular would speak, how many it caught, and how
         # often it speaks when it shouldn't
         "speak_recall": _ratio(spoke_both, spoke_label),

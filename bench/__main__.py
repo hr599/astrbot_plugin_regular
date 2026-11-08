@@ -1,4 +1,4 @@
-"""python -m bench [--db PATH] [--out DIR] [--aliases 阿灯,灯灯,灯]
+"""python -m bench [--db PATH] [--out DIR] [--aliases 阿灯,灯灯,灯] [--baseline]
 
 Without --db: replays the synthetic fixtures only (what CI and tests use).
 With --db: also replays the plugin's own regular.db and saved recordings, like
@@ -18,7 +18,7 @@ import json
 import sys
 from pathlib import Path
 
-from ._core import DEFAULT_ALIASES
+from ._core import DEFAULT_ALIASES, decide_m2, load_params
 from .commands import summary_line
 from .report import write_report
 from .runner import merge, replay
@@ -56,6 +56,7 @@ def main(argv=None) -> int:
     ap.add_argument("--db", type=Path, help="path to regular.db")
     ap.add_argument("--out", type=Path, default=Path("bench-out"), help="where the report goes")
     ap.add_argument("--aliases", help="comma-separated bot names, e.g. 阿灯,灯灯,灯")
+    ap.add_argument("--baseline", action="store_true", help="replay the M1 baseline instead of the M2 rules")
     ap.add_argument("--bot-ids", help="comma-separated QQ ids of other bots (default: other_bot_ids from the plugin config)")
     a = ap.parse_args(argv)
     if a.aliases:
@@ -79,7 +80,11 @@ def main(argv=None) -> int:
         recs += [from_store(st, sc, name="live", bot_uids=bot_ids) for sc in st.scope_ids("group")]
         recs += load_saved(a.db.parent / "bench" / "recordings")
     recs += load_fixtures()
-    runs = [replay(r, aliases=aliases) for r in recs if r.messages]
+    # same numbers as /reg bench: the M2 rules with the plugin's tuned params, if any
+    params = load_params(a.db.parent if a.db else None)
+    runs = [replay(r, aliases=aliases) if a.baseline else replay(r, decide_m2, aliases=aliases, params=params)
+            for r in recs if r.messages]
+    print(f"policy: {runs[0].policy if runs else '-'}")
     totals = merge(runs)
     for r in runs:
         print(summary_line(r.recording.name, r.metrics))

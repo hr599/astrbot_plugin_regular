@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from . import limits
 from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, name_addressed
+from .decide_rules import POLICY as M2_POLICY, decide_m2
 from .limits import LimitState
 from .moments import stored_moments
 from .gate import GateConfig, gate
@@ -22,7 +23,7 @@ from .perceive import perceive
 from .signals import compute as compute_signals, heat_step
 from .types import ChatEvent, Outcome
 
-HARNESS_VERSION = POLICY_VERSION
+HARNESS_VERSION = POLICY_VERSION  # the baseline; a Pipeline given M2 params reports M2_POLICY
 
 
 class Pipeline:
@@ -32,12 +33,21 @@ class Pipeline:
         gate_cfg: GateConfig,
         admin_handler: Callable[[ChatEvent], str] | None = None,
         aliases: tuple[str, ...] = DEFAULT_ALIASES,
+        params: dict[str, Any] | None = None,
     ):
+        """params: the M2 rules' numbers (decide_rules.load_params). Given, shadow
+        decide runs M2 and traces also keep what the M1 baseline would have done;
+        None keeps the baseline alone."""
         self.store = store
+        self.params = params
         self.gate_cfg = gate_cfg
         self.admin_handler = admin_handler
         self.aliases = aliases
         self._limits: dict[str, LimitState] = {}  # per group (task G)
+
+    @property
+    def harness_version(self) -> str:
+        return M2_POLICY if self.params is not None else POLICY_VERSION
 
     def _context(self, msg_id: str | None, n: int = 30) -> list[Msg]:
         """The stored moments before msg_id, as decide sees them in replay (task G:
@@ -51,6 +61,7 @@ class Pipeline:
             out.append(Msg(
                 msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
                 text="" if r["recalled"] else r["text"], mentions_bot="bot" in mentions,
+                mentions_other=any(x != "bot" for x in mentions),
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
             ))
@@ -65,17 +76,27 @@ class Pipeline:
             # today (for per-bot counts) and at least the burst window, which can
             # reach back past midnight (issue #17)
             since = min((limits.day_of(now) * 86400) - 8 * 3600, now - limits.SPAM_WINDOW_S)
-            past = [m for m in stored_moments(self.store, scope_id, since, now, bot_uids=self.gate_cfg.bot_uids)
-                    if m.msg_id != current]
+            # ...and back to where the current stretch of chat began, so room state the
+            # chat keeps alive (serious mode, heat) survives a restart across midnight
+            pool = [m for m in stored_moments(self.store, scope_id, now - limits.WARM_MAX_S, now,
+                                              bot_uids=self.gate_cfg.bot_uids) if m.msg_id != current]
+            since = limits.chain_start([m.ts for m in pool], since)
+            past = [m for m in pool if m.ts >= since]
             st = self._limits[scope_id] = LimitState.from_moments(past)
         return st
 
     def _shadow(self, m: Msg, scope_id: str, observe: bool = True) -> dict[str, Any]:
         st = self._limit_state(scope_id, m.ts, m.msg_id)
-        d = decide(m, self._context(m.msg_id), m.ts, aliases=self.aliases, state=st)
+        ctx = self._context(m.msg_id)
+        extra: dict[str, Any] = {}
+        if self.params is not None:
+            d = decide_m2(m, ctx, m.ts, aliases=self.aliases, state=st, params=self.params)
+            extra = {"baseline": decide(m, ctx, m.ts, aliases=self.aliases, state=st).action}
+        else:
+            d = decide(m, ctx, m.ts, aliases=self.aliases, state=st)
         if observe:
             st.observe(m)
-        return {"would": d.action, "addressed": d.addressed, "address_kind": d.address_kind,
+        return {**extra, "would": d.action, "addressed": d.addressed, "address_kind": d.address_kind,
                 "signals": d.reasons.get("signals", []), "rule": d.reasons.get("rule"), "policy": d.policy}
 
     def _signals(self, ev: ChatEvent, p, pid: int, reply_to_bot: bool, from_bot: bool) -> dict[str, Any]:
@@ -128,7 +149,7 @@ class Pipeline:
             st.observe(Msg(msg_id=msg_id, ts=ts, sender="阿灯", text=part, is_bot=True))
         self.store.trace(scope_id=job.scope_id, msg_id=msg_id, ended_at="send",
                          decision="dry_run" if dry else "sent", reasons=reasons,
-                         harness_version=HARNESS_VERSION, ts=ts)
+                         harness_version=self.harness_version, ts=ts)
 
     def handle(self, ev: ChatEvent) -> Outcome:
         verdict = gate(ev, self.gate_cfg)
@@ -177,7 +198,7 @@ class Pipeline:
                 ), ev.scope_id)
             self.store.trace(
                 scope_id=ev.scope_id, msg_id=trace_msg, ended_at="gate", decision=None,
-                reasons=reasons, harness_version=HARNESS_VERSION, ts=ev.ts,
+                reasons=reasons, harness_version=self.harness_version, ts=ev.ts,
             )
             return Outcome("gate", "notice", reasons)
 
@@ -190,7 +211,7 @@ class Pipeline:
                        "mode": "observe_only"}
             self.store.trace(
                 scope_id=ev.scope_id, msg_id=None, ended_at="perceive", decision="quiet",
-                reasons=reasons, harness_version=HARNESS_VERSION, ts=ev.ts,
+                reasons=reasons, harness_version=self.harness_version, ts=ev.ts,
             )
             return Outcome("perceive", "dropped_command", reasons)
         pid = self.store.person(ev.platform, ev.sender_uid, ev.sender_name, ev.ts)
@@ -202,7 +223,8 @@ class Pipeline:
         from_bot = ev.sender_uid in self.gate_cfg.bot_uids
         shadow = self._shadow(Msg(
             msg_id=ev.msg_id, ts=ev.ts, sender=str(pid), text=p.text,
-            mentions_bot=p.mentions_bot, reply_to=p.reply_to,
+            mentions_bot=p.mentions_bot, mentions_other=any(x != "bot" for x in p.mentions),
+            reply_to=p.reply_to,
             reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
         ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
@@ -225,6 +247,6 @@ class Pipeline:
         }
         self.store.trace(
             scope_id=ev.scope_id, msg_id=ev.msg_id, ended_at="perceive", decision="quiet",
-            reasons=reasons, harness_version=HARNESS_VERSION, ts=ev.ts,
+            reasons=reasons, harness_version=self.harness_version, ts=ev.ts,
         )
         return Outcome("perceive", "logged", reasons)

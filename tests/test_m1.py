@@ -207,7 +207,7 @@ class SameSecondContextTests(unittest.TestCase):
         msg = lab.next()
         block_first = [b for b in msg.split("【") if "→" in b and "FIRST" in b.split("→")[1]][0]
         self.assertNotIn("LATER", block_first)
-        run = replay(from_store(self.s, SCOPE))
+        run = replay(from_store(self.s, SCOPE), merge_turns=False)  # per-message context, no burst merging
         ctx = {st.msg.text: st.decision.reasons["context_len"] for st in run.steps}
         self.assertEqual((ctx["FIRST"], ctx["LATER"]), (1, 2))
 
@@ -378,7 +378,8 @@ class SyntheticReviewFixtureTests(unittest.TestCase):
     def test_store_recordings_unaffected_by_scenes(self):
         msgs = [Msg(str(i), i, "a", f"m{i}") for i in range(5)]
         seen = []
-        replay(Recording("t", "store", msgs), policy=lambda m, c, n, **k: (seen.append(len(c)), decide(m, c, n))[1])
+        replay(Recording("t", "store", msgs), policy=lambda m, c, n, **k: (seen.append(len(c)), decide(m, c, n))[1],
+               merge_turns=False)
         self.assertEqual(seen, [0, 1, 2, 3, 4])
 
     def test_regenerates_identically(self):
@@ -568,7 +569,7 @@ class BenchTests(unittest.TestCase):
             save(rec, d / "bench" / "recordings")
             self.assertEqual(len(load_saved(d / "bench" / "recordings")[0].messages), 2)
             out = bench_command(s, d, [])
-            self.assertIn("m1-baseline", out)
+            self.assertIn("m2-rules", out)
             self.assertIn("漏回 ✓", out)
             html = next((d / "bench" / "runs").glob("*.html")).read_text(encoding="utf-8")
             self.assertIn("秘密内容", html)  # the local viewer has the text...
