@@ -30,6 +30,7 @@ from .core.decide import DEFAULT_ALIASES
 from .core.gate import GateConfig
 from .core.labeling import Labeler
 from .core.outbox import Outbox, SendAdmin, deliver
+from .core.persona import load_persona
 from .core.people_admin import PeopleAdmin
 from .core.pipeline import HARNESS_VERSION, Pipeline
 from .services.debug import RawDumper, build_bundle
@@ -75,7 +76,10 @@ class Regular(Star):
             model_of=make_model_of(context),
             call=make_call(context),
         )
-        self.outbox = Outbox(str(config.get("send_mode", "off") or "off"))
+        # 阿灯 v2 (task M): the prompt files, plus the leak check's protected texts and canary
+        self.persona = load_persona(self.data_dir)
+        self.outbox = Outbox(str(config.get("send_mode", "off") or "off"),
+                             protected=self.persona.protected, canaries=self.persona.canaries)
         self._seed_send_cap()
         self._tasks: set[asyncio.Task] = set()
         self.admin = AdminCommands(
@@ -152,6 +156,7 @@ class Regular(Star):
             "cleanup": "running hourly" if self.janitor.running else "NOT running",
             "version": VERSION,
             "harness": HARNESS_VERSION,
+            "persona": self.persona.version,
             "mode": "decide runs in shadow; sending: " + self.outbox.mode
                     + (" (only /reg say sends before M2)" if self.outbox.mode != "off" else ""),
             "uptime_min": (int(time.time()) - self.started) // 60,
