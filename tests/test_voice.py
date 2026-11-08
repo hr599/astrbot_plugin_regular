@@ -145,6 +145,15 @@ class SpecificsTests(unittest.TestCase):
         self.assertEqual(v("11月见", "11月15号见"), "send")
         self.assertEqual(v("11月15号见", "15号见"), "rewrite")
 
+    def test_specifics_round_three(self):
+        v = lambda a, b="": check(a, context=b, rules={}).verdict  # noqa: E731
+        self.assertEqual(v("票价3万元", "票价5万元"), "rewrite")
+        self.assertEqual(v("票价3万元", "票价30000元"), "send")
+        self.assertEqual(v("温度是-12度", "温度是12度"), "rewrite")
+        self.assertEqual(v("温度是零下12度", "温度是-12度"), "send")
+        self.assertEqual(v("1月5号见", "01月05号见"), "send")
+        self.assertEqual(v("5号见", "01月05号见"), "send")
+
     def test_runs_of_punctuation_stay_attached(self):
         # PR #9 review: a lone "！" part was dropped by the command check
         for t in ("太好了！！", "什么？！", "真的吗？？"):

@@ -120,10 +120,10 @@ _SPECIFICS = [
     ("time", re.compile(rf"({_DAYPART})?({_N}\d{{1,2}}[:：]\d{{2}}|{_N}\d{{1,2}}点(半|\d{{1,2}}分?|[{_CN}]{{1,3}}分)?)")),
     # Chinese-numeral times: validated in _cn_time_ok ("好一点"/"差一点" aren't times)
     ("cn_time", re.compile(rf"({_DAYPART})?(?<![{_CN}])([{_CN}]{{1,3}})点(半|钟|[{_CN}]{{1,3}}分)?")),
-    ("price", re.compile(rf"[¥￥$]\s?\d+(\.\d+)?|{_N}\d+(\.\d+)?\s?(块|元|毛|美元|刀)")),
+    ("price", re.compile(rf"[¥￥$]\s?\d+(\.\d+)?[千万亿]?|{_N}\d+(\.\d+)?\s?[千万亿]?\s?(块|元|毛|美元|刀)")),
     # Chinese-numeral prices: "一块" alone is usually 一块儿 (together), so it needs 钱
     ("cn_price", re.compile(rf"(?<![{_CN}])([{_CN}]{{1,6}})(块|元|毛)(钱)?")),
-    ("number", re.compile(rf"{_N}(\d+(\.\d+)?%|\d{{2,}}(\.\d+)?)")),
+    ("number", re.compile(rf"(零下|[-−])?{_N}(\d+(\.\d+)?%|\d{{2,}}(\.\d+)?)")),
 ]
 _QUOTE = re.compile(r"[「“\"]([^」”\"]{4,})[」”\"]")
 
@@ -188,8 +188,12 @@ def _canon(kind: str, tok: str) -> str:
     if kind == "price":
         # currency kept (元 ≠ 美元), exact decimal kept (10000.01 ≠ 10000.02)
         usd = bool(re.search(r"[$]|美元|刀", t))
-        t = _arabic(t.replace("钱", ""))
-        v = Decimal(re.search(r"\d+(\.\d+)?", t).group(0))
+        t = t.replace("钱", "")
+        m = re.search(r"(\d+(?:\.\d+)?)([千万亿]?)", t)
+        if m:  # 3万元 = 30000元 (PR #9 review)
+            v = Decimal(m.group(1)) * {"千": 1000, "万": 10_000, "亿": 100_000_000}.get(m.group(2), 1)
+        else:
+            v = Decimal(re.search(r"\d+", _arabic(t)).group(0))
         if t.endswith("毛"):
             v = v / 10
         return f"price:{'USD' if usd else 'CNY'}:{format(v.normalize(), 'f')}"
@@ -197,7 +201,8 @@ def _canon(kind: str, tok: str) -> str:
         t = _arabic(t)
         mo = re.search(r"(\d+)月", t)
         d = re.search(r"(\d+)[日号]", t)
-        return f"date:{mo.group(1) if mo else ''}/{d.group(1) if d else ''}"
+        return f"date:{int(mo.group(1)) if mo else ''}/{int(d.group(1)) if d else ''}"  # 01月05号 = 1月5号
+    t = t.replace("零下", "-").replace("−", "-")  # the sign is part of the value
     return "number:" + t
 
 
