@@ -18,6 +18,8 @@ HELP = (
     "/reg forget <QQ号>  删掉一个人的全部记录（先预览，再 confirm）\n"
     "/reg optout|optin <QQ号>  不再记录 / 恢复记录某人\n"
     "/reg pause|resume [群号]  暂停 / 恢复观察（不写群号 = 全部）\n"
+    "/reg send off|dry|on  发送开关（默认关；dry = 只记录不真发）\n"
+    "/reg say <群号> <话>  让阿灯在群里说一句（测试发送用，只查安全不查风格）\n"
     "/reg help"
 )
 
@@ -31,6 +33,7 @@ class AdminCommands:
         labeler=None,
         bench: Callable[[list[str]], str] | None = None,
         people=None,
+        sender=None,
     ):
         self.status = status
         self.debug_bundle = debug_bundle
@@ -38,6 +41,7 @@ class AdminCommands:
         self.labeler = labeler
         self.bench = bench
         self.people = people
+        self.sender = sender
 
     def __call__(self, ev) -> str:
         words = ev.raw_text.strip().split()
@@ -70,6 +74,10 @@ class AdminCommands:
                 return self.bench(words[1:])
             except Exception as e:
                 return f"bench 出错：{type(e).__name__}: {e}"
+        if self.sender is not None:
+            out = self.sender.handle(sub, words[1:], ev.platform, ev.raw_text)
+            if out is not None:
+                return out
         if self.people is not None:
             out = self.people.handle(sub, words[1:], ev.platform)
             if out is not None:
