@@ -1,6 +1,7 @@
 """Task L: sending behind an off switch, /reg send, /reg say. No AstrBot needed."""
 
 import asyncio
+import json
 import time
 import unittest
 
@@ -78,6 +79,15 @@ class SendTests(unittest.TestCase):
         tr = self.s.db.execute("SELECT decision, reasons FROM traces WHERE ended_at='send'").fetchall()
         self.assertEqual([r[0] for r in tr], ["dry_run", "dry_run"])
         self.assertNotIn("阿灯", tr[0][1])  # length only, not the words
+
+    def test_send_traces_stay_readable_in_debug_bundles(self):
+        # the live test's bundle masked origin and part_len: they're ours, not group content
+        from services.debug import redact
+        self.reg("/reg send dry")
+        self.reg(f"/reg say {GROUP} 大家好")
+        self.run_queue()
+        r = json.loads(self.s.db.execute("SELECT reasons FROM traces WHERE ended_at='send'").fetchone()[0])
+        self.assertEqual(redact(r), {"origin": "admin_say", "dry": True, "part_len": 3, "reply_to": None})
 
     def test_on_sends_stores_and_feeds_the_limits(self):
         self.reg("/reg send on")

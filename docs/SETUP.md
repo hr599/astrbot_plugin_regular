@@ -15,8 +15,12 @@ Clone into AstrBot's `data/plugins/`:
 
 ```
 cd <astrbot>/data/plugins
-git clone -b m0-skeleton https://github.com/hr599/astrbot_plugin_regular
+git clone https://github.com/hr599/astrbot_plugin_regular
 ```
+
+To update later: `git pull` in that folder (on `master`), then restart AstrBot or
+reload the plugin. Back up `data/plugin_data/astrbot_plugin_regular/regular.db`
+first; schema upgrades run automatically on start.
 
 Restart AstrBot (or reload plugins in the dashboard). In the plugin's config page:
 
