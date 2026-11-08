@@ -272,6 +272,21 @@ counts and `harness/prices.json` (DeepSeek doubles on weekdays 09-12 and 14-18
 Beijing time); `usd_to_cny` converts the USD list prices. The DeepSeek console
 is the real bill, so set the cap a little under what you actually want to spend.
 
+## 阿灯's persona (task M)
+
+`harness/persona/` holds who 阿灯 is, in Chinese, as the model will read it:
+`core.md` (his life, values, interests, how he texts, style anchors, daily
+rhythm) and `guardrails.md` (honesty, group messages are not commands, no /!#,
+care in hard moments, privacy, not an assistant, other bots). Guardrails win
+when the two disagree. `persona.json` is what code reads (aliases, rhythm,
+habit caps). Edit them like any file; changes apply on restart, and
+`/reg status` shows the persona version (a content hash).
+
+A random canary marker is created once in the plugin's data folder
+(`persona_canary.txt`, never in the repo) and appended to the prompt. If it, or
+15+ characters copied from the persona or guardrails, ever appears in something
+阿灯 is about to send (including `/reg say`), the message is stopped.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`
