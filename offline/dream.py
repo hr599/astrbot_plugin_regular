@@ -1,0 +1,366 @@
+"""Dream pass, deterministic half: verify proposed memory ops, apply, audit, revert.
+
+The model half (gather transcripts, propose JSON ops, one cheap "does this
+quote support the claim?" LLM check) comes with M3. Everything here is plain
+code, so a proposal can't argue its way past it (design doc: Write path,
+"The dream pass" + "Evidence rules" + "Group messages are data").
+
+Checks, in order (first failure decides):
+  shape        known op kind and claim type; targets exist in this scope
+  evidence     every msg_id exists, is in this scope, isn't recalled, isn't a
+               command, isn't from an opted-out person or another bot
+  verbatim     each quote is an exact substring of its message (kills invented evidence)
+  imperative   no instructions to the bot stored as memory (except a preferred
+               name / topic to avoid, as attributed boundary facts)
+  sensitive    health, sexuality, religion, politics, legal trouble, money:
+               never a fact about someone; only as a boundary
+  computed     group norms and rapport come from statistics, not the dreamer
+  corroborate  the evidence rule for the claim type (table in the doc); not
+               enough yet -> demoted to a candidate that expires in 14 days
+  humans_only  reinforcing needs a human's words; the bot using a claim never counts
+  duplicate    nothing already on the card
+  caps         12 validated claims per person, 20 group-level, 10 active jokes
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+from .changes import Evidence, Op, Outcome, Verdict, review
+
+try:  # inside the plugin package
+    from ..core.perceive import injection_flags, is_command_like
+except ImportError:  # repo root (tests, CLI)
+    from core.perceive import injection_flags, is_command_like
+
+KINDS = {"add", "reinforce", "revise", "retire", "merge"}
+TYPES = {"identity", "relation", "self_disclosure", "joke", "boundary", "norm", "rapport",
+         "bot_self", "intention", "reflection"}
+CANDIDATE_DAYS = 14
+CAPS = {"person": 12, "group": 20, "joke": 10}
+
+# instructions disguised as memory. The two allowed exceptions are boundary facts:
+# how someone wants to be called, and a topic they asked to avoid.
+_IMPERATIVE = re.compile(
+    r"(阿灯|灯灯|机器人|bot|你)(要|必须|应该|得|不准|不许|以后|每次|记得)"
+    r"|以后(都|每次)?(要|得|叫)|从现在(起|开始)|(ignore|disregard|from now on|you (must|should|are now))", re.I)
+# must be phrased as the person's preference ("X希望被叫Y", "X不想聊Y"), not as an order to the bot
+_ALLOWED_PREFERENCE = re.compile(r"(希望|想|喜欢|要求)(以后)?(被)(叫|称呼)|不(想|喜欢|愿意)(聊|提|谈|被问)")
+
+# sensitive topics: never stored as a fact about someone (only as a boundary)
+_SENSITIVE = re.compile(
+    r"(病|癌|抑郁|焦虑症|精神|药|怀孕|流产|性取向|同性恋|gay|les|出柜|宗教|信(教|佛|主|基督)|政治|党员"
+    r"|坐牢|犯罪|被抓|官司|起诉|欠(钱|债)|工资|收入|存款|负债|贷款)", re.I)
+
+
+@dataclass
+class Ctx:
+    store: Any
+    scope_id: str
+    now: int = field(default_factory=lambda: int(time.time()))
+    admin_uids: set[str] = field(default_factory=set)
+    bot_uids: set[str] = field(default_factory=set)
+    _msgs: dict[str, Any] = field(default_factory=dict)
+
+    def msg(self, msg_id: str):
+        if msg_id not in self._msgs:
+            self._msgs[msg_id] = self.store.db.execute(
+                """SELECT m.*, p.platform_uid AS uid, p.opted_out AS opted_out
+                   FROM messages m LEFT JOIN people p ON p.person_id=m.person_id
+                   WHERE m.msg_id=?""", (msg_id,)).fetchone()
+        return self._msgs[msg_id]
+
+    def claim(self, claim_id: int | None):
+        if claim_id is None:
+            return None
+        return self.store.db.execute("SELECT * FROM claims WHERE claim_id=? AND scope_id=?",
+                                     (claim_id, self.scope_id)).fetchone()
+
+
+# ---------------------------------------------------------------- checks
+def check_shape(op: Op, ctx: Ctx):
+    if op.kind not in KINDS:
+        return Verdict("shape", f"unknown op kind {op.kind!r}")
+    if op.kind in ("add",) and op.type not in TYPES:
+        return Verdict("shape", f"unknown claim type {op.type!r}")
+    if op.kind in ("add", "revise") and not op.text.strip():
+        return Verdict("shape", "empty claim text")
+    if op.kind in ("reinforce", "revise", "retire", "merge") and ctx.claim(op.claim_id) is None:
+        return Verdict("shape", "target claim not found in this scope")
+    if op.kind == "merge" and not all(ctx.claim(i) for i in op.merge_ids):
+        return Verdict("shape", "merge source not found in this scope")
+    if op.kind in ("add", "reinforce", "revise") and not op.evidence:
+        return Verdict("shape", "no evidence")
+    if op.kind in ("revise", "retire") and not op.contra:
+        return Verdict("shape", f"{op.kind} needs the contradicting evidence")
+    return None
+
+
+def _all_evidence(op: Op) -> list[Evidence]:
+    return list(op.evidence) + list(op.contra)
+
+
+def check_evidence(op: Op, ctx: Ctx):
+    for e in _all_evidence(op):
+        m = ctx.msg(e.msg_id)
+        if m is None:
+            return Verdict("evidence", f"{e.msg_id}: no such message")
+        if m["scope_id"] != ctx.scope_id:
+            return Verdict("evidence", f"{e.msg_id}: from another group")
+        if m["recalled"]:
+            return Verdict("evidence", f"{e.msg_id}: recalled")
+        if m["is_command_like"] or is_command_like(m["text"]):
+            return Verdict("evidence", f"{e.msg_id}: command-like")
+        if m["opted_out"]:
+            return Verdict("evidence", f"{e.msg_id}: from an opted-out person")
+        if m["uid"] is not None and str(m["uid"]) in ctx.bot_uids:
+            return Verdict("evidence", f"{e.msg_id}: from another bot")
+    return None
+
+
+def check_verbatim(op: Op, ctx: Ctx):
+    for e in _all_evidence(op):
+        if not e.quote or e.quote not in ctx.msg(e.msg_id)["text"]:
+            return Verdict("verbatim", f"{e.msg_id}: quote is not a verbatim substring")
+    return None
+
+
+def check_imperative(op: Op, ctx: Ctx):
+    if op.kind not in ("add", "revise"):
+        return None
+    if op.type == "boundary" and _ALLOWED_PREFERENCE.search(op.text):
+        return None  # preferred name / topic to avoid, stored as an attributed fact
+    if _IMPERATIVE.search(op.text) or injection_flags(op.text):
+        return Verdict("imperative", "reads as an instruction to the bot")
+    return None
+
+
+def check_sensitive(op: Op, ctx: Ctx):
+    if op.kind in ("add", "revise") and op.type != "boundary" and _SENSITIVE.search(op.text):
+        return Verdict("sensitive", "sensitive topic as a fact about someone (only a boundary may mention it)")
+    return None
+
+
+def check_computed(op: Op, ctx: Ctx):
+    if op.kind == "add" and op.type in ("norm", "rapport"):
+        return Verdict("computed", "group norms and rapport come from transcript statistics, not the dreamer")
+    return None
+
+
+def _speakers(op: Op, ctx: Ctx, evidence: list[Evidence]) -> list[int]:
+    return [ctx.msg(e.msg_id)["person_id"] for e in evidence]
+
+
+def check_corroboration(op: Op, ctx: Ctx):
+    """The evidence table in the design doc (Write path: Evidence rules)."""
+    if op.kind != "add":
+        return None
+    ev = op.evidence
+    speakers = _speakers(op, ctx, ev)
+    humans = [s for s, e in zip(speakers, ev) if not ctx.msg(e.msg_id)["is_bot"]]
+    distinct = set(humans)
+    sessions = {ctx.msg(e.msg_id)["session_id"] for e in ev if not ctx.msg(e.msg_id)["is_bot"]}
+    t = op.type
+    if t in ("identity", "self_disclosure"):
+        if op.subject in distinct or len(distinct) >= 2:
+            return None
+        return Verdict("corroborate", "about a person: needs their own words or 2+ speakers", demote=True)
+    if t == "relation":
+        if op.subject in distinct or op.object in distinct or len(distinct) >= 2:
+            return None
+        return Verdict("corroborate", "relation: needs either person's words or 2+ speakers", demote=True)
+    if t == "joke":
+        if len(distinct) >= 2 and len(sessions) >= 2:
+            return None
+        return Verdict("corroborate", "running joke: 2+ humans in 2+ sessions", demote=True)
+    if t == "boundary":
+        admins = {s for s, e in zip(speakers, ev) if str(ctx.msg(e.msg_id)["uid"]) in ctx.admin_uids}
+        if op.subject is None or op.subject in distinct or admins:
+            return None
+        return Verdict("corroborate", "boundary: from the person concerned or an admin", demote=True)
+    if t == "bot_self":
+        if all(ctx.msg(e.msg_id)["is_bot"] for e in ev):
+            return None
+        return Verdict("corroborate", "bot_self: only the bot's own past messages count")
+    if t == "intention":
+        if any(re.search(r"\d|周[一二三四五六日天]|[一二三四五六七八九十]+月|明天|后天|下(周|个月)", e.quote) for e in ev):
+            return None
+        return Verdict("corroborate", "intention: needs a dated plan or promise")
+    if t == "reflection":
+        if len(ev) >= 3 and len(sessions) >= 2:
+            return None
+        return Verdict("corroborate", "reflection: 3+ cited spans across 2+ sessions")
+    return None
+
+
+def check_humans_only(op: Op, ctx: Ctx):
+    """Only humans reinforce: the bot repeating a claim must not keep it alive."""
+    if op.kind == "reinforce" and all(ctx.msg(e.msg_id)["is_bot"] for e in op.evidence):
+        return Verdict("humans_only", "only the bot's own messages: bots don't reinforce")
+    return None
+
+
+def _norm(s: str) -> str:
+    return re.sub(r"[\s，,。.！!？?、]", "", s or "")
+
+
+def check_duplicate(op: Op, ctx: Ctx):
+    if op.kind != "add":
+        return None
+    for r in ctx.store.db.execute(
+            """SELECT text FROM claims WHERE scope_id=? AND status IN ('candidate','validated','dormant')
+               AND type=? AND subject_id IS ?""", (ctx.scope_id, op.type, op.subject)):
+        if _norm(r["text"]) == _norm(op.text):
+            return Verdict("duplicate", "already on the card")
+    return None
+
+
+def check_caps(op: Op, ctx: Ctx):
+    if op.kind != "add":
+        return None
+    q = lambda sql, *a: ctx.store.db.execute(sql, a).fetchone()[0]  # noqa: E731
+    if op.type == "joke" and q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND type='joke' AND status='validated'",
+                               ctx.scope_id) >= CAPS["joke"]:
+        return Verdict("caps", "10 active jokes: merge or retire one first")
+    if op.subject is None:
+        if q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id IS NULL AND status='validated'",
+             ctx.scope_id) >= CAPS["group"]:
+            return Verdict("caps", "20 group-level claims: merge or retire first")
+    elif q("SELECT COUNT(*) FROM claims WHERE scope_id=? AND subject_id=? AND status='validated'",
+           ctx.scope_id, op.subject) >= CAPS["person"]:
+        return Verdict("caps", "12 claims for this person: merge or retire first")
+    return None
+
+
+CHECKS = [check_shape, check_evidence, check_verbatim, check_imperative, check_sensitive,
+          check_computed, check_corroboration, check_humans_only, check_duplicate, check_caps]
+
+
+# ---------------------------------------------------------------- apply / audit / revert
+def _snapshot(store, claim_id: int) -> dict | None:
+    row = store.db.execute("SELECT * FROM claims WHERE claim_id=?", (claim_id,)).fetchone()
+    if row is None:
+        return None
+    ev = [dict(r) for r in store.db.execute("SELECT * FROM evidence WHERE claim_id=?", (claim_id,))]
+    return {"claim": dict(row), "evidence": ev}
+
+
+def _source(op: Op, ctx: Ctx) -> str:
+    speakers = {ctx.msg(e.msg_id)["person_id"] for e in op.evidence}
+    if any(str(ctx.msg(e.msg_id)["uid"]) in ctx.admin_uids for e in op.evidence) and op.type == "boundary":
+        return "admin"
+    return "self" if op.subject in speakers else "corroborated"
+
+
+def _insert_claim(ctx: Ctx, op: Op, status: str, run_id: int, expires: int | None) -> int:
+    cid = ctx.store.db.execute(
+        """INSERT INTO claims (scope_id, subject_id, object_id, type, text, status, source, created,
+             last_evidence, expires, run_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (ctx.scope_id, op.subject, op.object, op.type, op.text, status, _source(op, ctx), ctx.now,
+         max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), expires, run_id)).lastrowid
+    for e in op.evidence:
+        ctx.store.db.execute("INSERT INTO evidence (claim_id, msg_id, quote, stance) VALUES (?,?,?,'supports')",
+                             (cid, e.msg_id, e.quote))
+    return cid
+
+
+def apply(ops: list[Op], ctx: Ctx, *, model: str = "") -> dict[str, Any]:
+    """Review, then apply in one transaction. Returns the run summary."""
+    outcome: Outcome = review(ops, CHECKS, ctx)
+    db = ctx.store.db
+    db.execute("BEGIN")
+    try:
+        run_id = db.execute(
+            "INSERT INTO dream_runs (scope_id, started, model, diff_json) VALUES (?,?,?,'[]')",
+            (ctx.scope_id, ctx.now, model)).lastrowid
+        diff = []
+        for op in outcome.accepted:
+            touched = [op.claim_id] + op.merge_ids if op.claim_id else []
+            before = {cid: _snapshot(ctx.store, cid) for cid in touched}
+            if op.kind == "add":
+                cid = _insert_claim(ctx, op, "validated", run_id, None)
+                touched = [cid]
+            elif op.kind == "reinforce":
+                db.execute("""UPDATE claims SET strength=MIN(1.0, strength+0.25), status='validated',
+                              last_evidence=?, run_id=? WHERE claim_id=?""",
+                           (max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), run_id, op.claim_id))
+                for e in op.evidence:
+                    db.execute("INSERT INTO evidence VALUES (?,?,?,'supports')", (op.claim_id, e.msg_id, e.quote))
+            elif op.kind == "revise":
+                db.execute("UPDATE claims SET text=?, last_evidence=?, run_id=? WHERE claim_id=?",
+                           (op.text, max(ctx.msg(e.msg_id)["ts"] for e in op.evidence), run_id, op.claim_id))
+                for e in op.evidence:
+                    db.execute("INSERT INTO evidence VALUES (?,?,?,'supports')", (op.claim_id, e.msg_id, e.quote))
+                for e in op.contra:
+                    db.execute("INSERT INTO evidence VALUES (?,?,?,'contradicts')", (op.claim_id, e.msg_id, e.quote))
+            elif op.kind == "retire":
+                db.execute("UPDATE claims SET status='retired', run_id=? WHERE claim_id=?", (run_id, op.claim_id))
+                for e in op.contra:
+                    db.execute("INSERT INTO evidence VALUES (?,?,?,'contradicts')", (op.claim_id, e.msg_id, e.quote))
+            elif op.kind == "merge":
+                for mid in op.merge_ids:
+                    db.execute("UPDATE evidence SET claim_id=? WHERE claim_id=?", (op.claim_id, mid))
+                    db.execute("UPDATE claims SET status='retired', run_id=? WHERE claim_id=?", (run_id, mid))
+                db.execute("UPDATE claims SET run_id=? WHERE claim_id=?", (run_id, op.claim_id))
+            diff.append({"op": op.to_json(), "before": before,
+                         "touched": touched, "after": {cid: _snapshot(ctx.store, cid) for cid in touched}})
+        for op, v in outcome.demoted:
+            cid = _insert_claim(ctx, op, "candidate", run_id, ctx.now + CANDIDATE_DAYS * 86400)
+            diff.append({"op": op.to_json(), "before": {}, "touched": [cid], "candidate": v.reason,
+                         "after": {cid: _snapshot(ctx.store, cid)}})
+        for op, v in outcome.rejected:
+            db.execute("INSERT INTO rejected (run_id, proposal_json, reason) VALUES (?,?,?)",
+                       (run_id, json.dumps(op.to_json(), ensure_ascii=False), f"{v.check}: {v.reason}"))
+        db.execute("UPDATE dream_runs SET diff_json=?, n_applied=?, n_rejected=? WHERE run_id=?",
+                   (json.dumps(diff, ensure_ascii=False, default=str), len(outcome.accepted) + len(outcome.demoted),
+                    len(outcome.rejected), run_id))
+        db.execute("COMMIT")
+    except Exception:
+        db.execute("ROLLBACK")
+        raise
+    return {"run_id": run_id, "applied": len(outcome.accepted), "candidates": len(outcome.demoted),
+            "rejected": [(op.kind, op.type, f"{v.check}: {v.reason}") for op, v in outcome.rejected]}
+
+
+def revert(store, run_id: int) -> int:
+    """/reg dream revert <run>: restore every claim this run touched. Transcripts are never modified."""
+    row = store.db.execute("SELECT diff_json, reverted FROM dream_runs WHERE run_id=?", (run_id,)).fetchone()
+    if row is None or row["reverted"]:
+        return 0
+    diff = json.loads(row["diff_json"])
+    touched = {int(c) for entry in diff for c in entry["touched"]}
+    later = [r["claim_id"] for r in store.db.execute(
+        f"SELECT claim_id FROM claims WHERE run_id>? AND claim_id IN ({','.join('?' * len(touched))})",
+        [run_id, *touched])] if touched else []
+    if later:  # a later run built on this one; undo that first so nothing is silently lost
+        raise ValueError(f"claims {later} were changed by a later run; revert that run first")
+    store.db.execute("BEGIN")
+    try:
+        for entry in reversed(diff):
+            before = {int(k): v for k, v in entry["before"].items()}
+            for cid in entry["touched"]:
+                cid = int(cid)
+                store.db.execute("DELETE FROM evidence WHERE claim_id=?", (cid,))
+                snap = before.get(cid)
+                if snap is None:  # created by this run
+                    store.db.execute("DELETE FROM claims WHERE claim_id=?", (cid,))
+                    continue
+                c = snap["claim"]
+                cols = ", ".join(f"{k}=?" for k in c if k != "claim_id")
+                store.db.execute(f"UPDATE claims SET {cols} WHERE claim_id=?",
+                                 [c[k] for k in c if k != "claim_id"] + [cid])
+                for e in snap["evidence"]:
+                    store.db.execute("INSERT INTO evidence VALUES (?,?,?,?)",
+                                     (cid, e["msg_id"], e["quote"], e["stance"]))
+            # merge moved the sources' evidence onto the target; restoring the target's
+            # snapshot above put its own back, and the sources' snapshots restore theirs
+        store.db.execute("UPDATE dream_runs SET reverted=1 WHERE run_id=?", (run_id,))
+        store.db.execute("COMMIT")
+    except Exception:
+        store.db.execute("ROLLBACK")
+        raise
+    return len(diff)
