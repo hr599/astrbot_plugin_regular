@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 evening: everything through #38 merged, so **M2 is done** and 阿灯 is live in the group. In review: #39 (fewer unprompted replies) and #40 (configurable, resettable send cap), both from the first live afternoon.
+Last updated: 2026-11-09 night: everything through #43 merged. 阿灯 is live in the group (M2 done), and M3a (nightly dreaming, dry only) is running. In review: #44 (fixes from the first real dream bench).
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -15,7 +15,7 @@ It doesn't act as an assistant: it should mostly watch, sometimes react, sometim
 chip in, and always answer when someone talks to it directly.
 
 - **Stack:** AstrBot 4.29.4, connected to QQ through LLBot 8.3.2 (OneBot v11 reverse WebSocket). The AstrBot platform id is `llbot`.
-- **The group:** everyone knows it's a bot running on the owner's alt account, and the group agreed to its messages going to DeepSeek.
+- **The group:** everyone knows it's a bot running on the owner's alt account. The group agreed to its messages going to DeepSeek, and (Nov 9) to the nightly dream sending the day's chat to OpenAI.
 - **Persona:** `harness/persona/` (`core.md`, `guardrails.md`, `persona.json`). Guardrails win over core.
 - **License:** AGPL-3.0.
 
@@ -28,7 +28,7 @@ chip in, and always answer when someone talks to it directly.
   - If a suggested change isn't necessary, say so; the owner asked for that.
   - Merge bar: the main functions work and there's no substantive problem. Small confirmed edge cases can become follow-up issues.
 - **GitHub from a Claude session.** GraphQL was blocked in past sessions, so PRs and comments went through the REST API (`gh api repos/.../pulls`), not `gh pr create`.
-- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (414 passing at #37).
+- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (499 passing at #44).
 - **`core/` has no astrbot imports.** Everything AstrBot-specific lives in `adapter/` and `main.py`, so the whole pipeline is testable without AstrBot.
 
 ## Hard rules (security and privacy)
@@ -43,7 +43,7 @@ chip in, and always answer when someone talks to it directly.
   - Other bots' QQ ids go in the plugin config, not the repo.
 - **What a Claude session sees.**
   - Bench results come back as numbers-only summaries (`/reg debug`, `*-last.json`).
-  - The HTML reports (`bench/runs/bench-*.html`, `compose-*.html`) quote real chat and are only for the owner's eyes.
+  - The HTML reports (`bench/runs/bench-*.html`, `compose-*.html`, `dream/dream-*.html`) quote real chat and are only for the owner's eyes. `dream-bench-*.html` quotes only the synthetic group, so the owner can share it.
 - **`/reg forget` erases a person everywhere,** including model caches and HTML reports. It also voids any model bench or compose run that's in progress.
 - **Persona and internals are protected without being overly defensive.** The leak check flags any 15-character run copied from the prompt (except inside example lines), plus a canary per install.
 - **Forked code must have a clear open-source license.** If an AGPL plugin is forked, the fork is published.
@@ -57,12 +57,12 @@ chip in, and always answer when someone talks to it directly.
   | decide | deepseek-flash | off |
   | reply | deepseek-flash (final, Nov 9) | off |
   | caption | deepseek-flash | off |
-  | dream | deepseek-v4-pro | high |
+  | dream | gpt-6.1-sol (owner's call, Nov 9; its own OpenAI provider) | high |
   | judge | gpt-6.1-terra | low |
 
 - **The adapter calls the provider's OpenAI client directly.** `llm_generate` drops kwargs in 4.29.x.
 - **Budget:** DeepSeek ¥50/month and OpenAI $30/month, enforced as daily caps (monthly ÷ 30). Prices are in `harness/prices.json`. Every call goes into the `model_calls` ledger.
-- **Observed cost:** about 200 decide calls ≈ ¥0.06, because DeepSeek serves the persona prefix from its prompt cache.
+- **Observed cost:** about 200 decide calls ≈ ¥0.06, because DeepSeek serves the persona prefix from its prompt cache. One `/reg bench dream` run (64 messages) cost $0.044. The dream has its own nightly cap, `dream_budget_usd` (0.40).
 
 ## How decisions get made
 
@@ -78,70 +78,43 @@ chip in, and always answer when someone talks to it directly.
 
 ## Where things stand
 
-Milestones: M0 skeleton → M1 replay bench → M2 speaking (done, live) → M3 memory →
+Milestones: M0 skeleton → M1 replay bench → M2 speaking (done, live) → **M3 memory (M3a running dry)** →
 M4 social → M5 learning loop.
 
-- **Done.** M0, M1 and all the groundwork:
-  - limits for other bots and @ bursts
-  - sending with `send_mode` off/dry/on and an hourly cap of 20
-  - models and budget, thinking per role
-  - persona files and the leak check
-  - forget/opt-out/pause
-  - the dream verifier
-  - voice checks
-- **M2a, merged (#26, #27).** Rule-based decide (`core/decide_rules.py`), with `/reg bench tune` fitting its numbers on dev labels.
-  - On 200 real labels it reaches **41%** balanced accuracy (dev and held-out), up from 33% for the baseline. React recall is still 0%.
-  - The tuned params haven't been applied; `/reg bench tune apply` would do it.
-  - Live shadow decide runs these rules.
-- **M2b, merged and bench-only (#28, #29, #32).** For moments the rules aren't sure of, deepseek-flash scores react and reply 0–9, and `/reg bench model` fits the two cutoffs on dev labels.
-  - It uses dev balanced accuracy only; the 5/5 defaults stay unless beaten by 2 points (#32). Reply share isn't used, because the model only judges labeled moments.
-  - Real runs on 31 held-out labels: rules 33% (untuned), the model 42–48% across runs. That's not clearly above the tuned rules' 41%, given about ±9 points of noise. Not live.
-- **M2c part 1, merged (#30, #32).** Compose: draft → voice check → one redraft → send or drop. `/reg bench compose` drafts replies for the moments labeled "reply", with the drafts in a local HTML report.
-  - First real run: drafts were short and passed the checks, but 24/30 said "在上课 晚点说". The compose prompt said "in class", and the persona gave that line. Fixed in #32: the hour now shapes *how* he replies, never *whether*.
-  - The owner's review of the drafts (Nov 9): the problem is following the thread. Drafts missed sarcasm (praising an idea the group was mocking), answered the last line literally, guessed facts, and said "I've lost track" 4/30 times.
-- **#33, merged: following the thread, and the labels.**
-  - Speakers by nickname (never a QQ number: `display_name`); quotes resolved to whom and what (`回复 小王：“…”`).
-  - Compose reads the room first: it answers `{gist, reply}`, and the gist goes to the local report only.
-  - Prompts: messages to someone else are usually between them; don't fill in what the chat didn't say; images are unseen.
-  - Labeling: 8 lines of context, quotes marked, earlier 3s flagged, `/reg label recheck` for old 3s. The reply labels likely overstate replying (long streaks in one thread, messages meant for others).
-  - Voice: a quote counts as made-up only when attributed or 12+ characters.
-- **First run after #33 (Nov 9 afternoon, old labels; recheck not done yet).**
-  - Compose: the gists show it now reads mockery and jokes correctly (cases 4, 7–9), and there are no brush-offs or repeats. But 19 of 30 first drafts failed the format check: a two-line reply puts a raw line break inside the JSON string. Fixed in #35.
-  - Model: held-out 32% (default cuts) and 45.6% (fitted 5/2). The fitted cuts reply to about half of all labeled moments, and react recall is 0. #35 limits fitted cuts to the labeled reply rate +10 points. The model is still not shown to beat the tuned rules (41%).
-
-- **#36, merged: live replies and learning from the group.** The owner's calls (Nov 9): he's doing well enough, go live straight into the group; answer when talked to, plus rule-based chime-ins; learn when to jump in fully automatically (no rating DMs).
-  - `core/live.py`: pause (4 s / max 15) → decide the merged turn (M2 rules) → compose → outbox → deliver under a per-group lock. One retry on an @'s model error; a canned line over budget. Nothing happens unless `send_mode` is `on` (or `dry`).
-  - `core/feedback.py`, every 5 min: after a chime-in, engaged → reply, ignored or pushed back → quiet; an unanswered group question → reply. Schema v6 `auto_labels`; dev side only, never held out, never in the implied rate; hand labels win.
-  - **#37, merged: emoji reactions.** No model call: the emoji comes from the message's cue (`harness/rules/reactions.json`), and half the time from the group's own favourites once it has reacted enough. 20 per group per hour; never into a paused group; `set_msg_emoji_like` in `adapter/actions.py`. **To check live:** that LLBot accepts the action and the ids show the expected faces.
-  - **#38, merged: crisis moments and the caption wait.** Every crisis-cue line in the turn is checked by the decide model, latest first; sincere or can't tell → a caring reply and a private DM to the owner (`crisis_dm_to`, else `admins_id`), once per person per day, recorded only if still valid; all "not" → an ordinary message. Live turns wait up to 6 s for a photo caption in progress. **To check live:** the private DM arrives.
-- **First live afternoon (Nov 9).** The owner's findings: (1) after one @, he answered every line that person sent next (each reply reopened the follow-up window); (2) the 20/hour send cap ran out fast; the group is eager to chat. The background learning (automatic labels every 5 min) keeps running when the cap is hit: it only reads the chat.
-  - **#39, in review: fewer unprompted replies.** One follow-up per direct address (`addressed.follow_up_max: 1`); any new @, quote or name restarts it (also when the @ is merged with a plain line into one turn). Unprompted replies capped at 6 per group per hour (`unprompted_per_hour`); @s, quotes, pokes and crisis turns are never capped and never counted (by the turn's real crisis verdict, fixed after review).
-  - **#41, in review: "hhh" on nearly every line.** The persona brief named it twice; removed, and a laugh ending is trimmed when one of his last 4 lines already had one (no model call; traced `trimmed`).
-  - **#43, merged: long conversations.** The owner picked options 1 and 2 (Nov 9): compose shows 30 lines (was 16), and `core/recall.py` brings back up to 3 older lines from the last 6 hours that the message picks up (word overlap, no model call), plus a quoted one, word for word in an `<earlier>` block. A recall of a shown line cancels the reply. Not done (owner: only if needed): a running summary of the conversation. Small follow-up from review: in `/reg bench compose`, a quoted line can come back from more than 6 hours ago (live is bounded by its 6-hour pool); apply the lookback to quotes too.
-  - **Who said what (owner, Nov 9): wait and see.** Safeguards today: nicknames per line, quotes resolved, `_attributed` voice check; in memory, code knows each quote's speaker and a fact about someone needs their own words or two speakers. Known gap, for later: the quote-support check isn't asked directly whether the memory is about the right person.
-  - **#40, review passed: the send cap.** `send_cap_per_hour` (default 20, 1–60); admin DM `/reg send cap [N]` and `/reg send reset [group]`. A reset survives restarts (a `send_reset` trace) and keeps queued reservations.
+- **M0, M1 and the groundwork (Nov 8).** Gate, perceive, store, traces, the replay bench and labels; limits for other bots and @ bursts; sending with `send_mode` off/dry/on; models and budget; persona files and the leak check; forget/opt-out/pause; the dream verifier (#11); voice checks.
+- **M2, speaking (done Nov 9, live in the group).**
+  - Decide: rules (`core/decide_rules.py`, #26 #27). On 200 real labels they reach **41%** balanced accuracy (dev and held-out), up from 33%; react recall is still about 0%. The tuned params haven't been applied (`/reg bench tune apply`). The decide model (#28 #29 #32 #35) isn't clearly better, so it stays bench-only.
+  - Compose (#30 #32 #33 #35): reads the room first (`{gist, reply}`), speakers by nickname, quotes resolved, voice check, one redraft. The owner's verdict on real drafts: deepseek-flash is good enough (the bake-off was dropped).
+  - Photo captions on arrival (#34); live replies and automatic labels from how the group reacts (#36); emoji reactions (#37); crisis check with a private DM to the owner (#38).
+- **The first live days (Nov 9).**
+  - #39: one follow-up per direct address, and at most 6 unprompted replies per group per hour (crisis turns exempt).
+  - #40: the hourly send cap is configurable (1–60) and resettable (`/reg send cap|reset`).
+  - #41: "hhh" was named in the persona and ended nearly every line; removed, and a laugh ending is trimmed when one of his last 4 lines had one.
+  - #43, long conversations (owner picked options 1 and 2): compose shows 30 lines (was 16), and `core/recall.py` brings back up to 3 older lines from the last 6 hours that the message picks up, plus a quoted one, word for word in an `<earlier>` block (no model call). A recall of a shown line cancels the reply. A running summary of the conversation was not done (only if needed).
+  - Who said what (owner: wait and see). Safeguards: nicknames per line, quotes resolved, the `_attributed` voice check; in memory, code knows each quote's speaker and a fact about someone needs their own words or two speakers. Known gap: the quote-support check isn't asked directly whether a memory is about the right person.
+  - Open from the owner: LLBot drops offline now and then (root cause not found yet).
+- **M3, memory.** The spec is the "M3 memory spec" tab of the design doc (https://claude.ai/artifact/Uz9u48RGAiw6oH4RB5zTvZ). The owner's calls: dream nightly only (plus `/reg dream now`), on GPT-6.1 Sol; the relationship record moves to M4; memories are reviewed through `/reg mem` and a local HTML report per run (Claude sees counts only); no recall tools, memories are injected. Four PRs, each behind a gate:
+  - **M3a, merged (#42), running dry since Nov 9.** `offline/dream_pass.py` (gather, prompt, M3 checks, nightly caps, quote-support check, run rows), `offline/dream_admin.py` (`/reg dream off|dry|now|log`), `offline/dream_bench.py` (`/reg bench dream` on `bench/fixtures/dream_v1.json`); schema v7. Dry mode writes reports only, never memory.
+  - **First real `/reg bench dream` (Nov 9):** 12/15 found, 1/10 wrong stored (N4: a boundary recording a declined 主人 request), $0.044. #44 fixes N4 (a role asked of 阿灯 is never kept), S8 (a bot_self may name 阿灯), S1 (today's date and weekdays in the prompt; what intention is for) and the fixture's S6 (its date was already past).
+  - **Gate before M3b:** the synthetic bench stores none of the 10 wrong notes and finds 10+ of 15; the owner reads 3+ real dry-run reports with 90%+ of proposals right.
+  - **M3b, dreaming on:** apply, revert, decay and expiry, recall cleanup, `{p:id}` name tokens covered by forget, `/reg mem show|group|del|pin`.
+  - **M3c, memories in replies:** a `<memory>` block in the compose user turn, ~600 tokens, validated only.
+  - **M3d, episodes.**
 
 ## Next steps (in order)
 
-1. **Owner:** update the plugin, then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Check live: captions (`/reg status` → `captions`), that a reaction shows the expected face, and the first replies. Watch `mode`, `captions`, `learning`. `/reg label recheck` when there's time.
-2. **Image captions: #34, merged.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
-3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
-4. **Merge #40 and #39**, then watch a day live: how many unprompted replies per hour, and whether he now lets threads go. Tune `unprompted_per_hour` / `follow_up_max` in decide.json if he's too quiet or too chatty.
-5. **After going live:** a numbers-only check of the first days (replies and reactions per day, engaged vs ignored, missed questions, cost), then retune with the automatic labels.
-6. **Decided (Nov 9):** when the group discusses 阿灯 or this project, he joins in, in character. No change needed.
-7. **M2d bake-off: dropped (owner's call, Nov 9).** deepseek-flash is good enough for replies, judging by the real drafts. To revisit, point `provider_reply` at a v4-pro provider and rerun `/reg bench compose`. The blind test (can the group tell him from a member?) is optional, after a while live.
-8. **M3 memory: spec written, waiting for the owner's review before any code.** It's the "M3 memory spec" tab of the design doc (https://claude.ai/artifact/Uz9u48RGAiw6oH4RB5zTvZ). The owner's calls: dream nightly only (plus `/reg dream now`), on GPT-6.1 Sol (`gpt-6.1-sol`, reasoning high, via the OpenAI provider, at most $0.40 a night; the quote-support check stays on deepseek-flash). The group agreed to DeepSeek, not OpenAI: the owner gets their OK before the first dry run. Also: the relationship record moves to M4; memories are reviewed through `/reg mem` in the admin DM plus a local HTML report per run (Claude sees counts only); no recall tools, memories are injected. Four PRs, each behind a gate:
-   - **M3a, dreaming in dry mode: #42, merged (Nov 9).** Code in `offline/dream_pass.py` (gather, prompt, M3 checks, nightly caps, support check, run rows), `offline/dream_admin.py` (`/reg dream`), `offline/dream_bench.py` (`/reg bench dream` on `bench/fixtures/dream_v1.json`); schema v7. Spec as written: gather (refs `m1`…, nickname handles, captions as context only), the GPT-6.1 Sol proposal (add its price to `harness/prices.json`), the #11 checks plus people / persona-overlap / text / nightly-cap checks, one flash quote-support call, the run report, `/reg dream off|dry|now|log`. Gate: the synthetic fixture stores none of 10 wrong notes and finds 10 of 15; the owner reads 3+ dry-run reports, 90%+ right.
-   - **First real `/reg bench dream` (Nov 9, GPT-6.1 Sol):** 12/15 found, 1/10 wrong stored (N4: a boundary recording a declined 主人 request), $0.044 (far under the estimate). #44 fixes N4 (role requests never kept), S8 (bot_self may name 阿灯), S1 (today's date and weekdays in the prompt; what intention is for) and the fixture's S6 (date was already past). Dry runs nightly since Nov 9 with the group's OK for OpenAI.
-   - **M3b, dreaming on:** apply, revert, decay and expiry, recall cleanup, `{p:id}` name tokens covered by forget, `/reg mem show|group|del|pin`.
-   - **M3c, memories in replies:** a `<memory>` block in the compose user turn, ~600 tokens, validated only.
-   - **M3d, episodes.**
-9. **Later:** M4 (relationship record, tone, stickers, mood), M5 learning loop.
+1. **Merge #44, update, rerun `/reg bench dream`** (the prompt changed, so no cache hit; about $0.04). It must store 0 of the 10 wrong notes and find 10+ of 15.
+2. **Read a few nights of dry-run reports** (`/reg dream log`, then `dream/dream-<run>.html`). The owner tells Claude roughly how many proposals were wrong or not worth keeping; that's the 90% gate.
+3. **Then M3b** (dreaming on). Claude builds it after the gate.
+4. **Live checks still open:** that a reaction shows the expected face; that the crisis DM arrives; a numbers-only look at the first days (`/reg debug`: replies and reactions per day, engaged vs ignored, cost), then retune decide with the automatic labels.
+5. **Small follow-ups:** in `/reg bench compose`, apply the 6-hour lookback to quoted lines too (live is already bounded); find why LLBot drops offline.
+6. **Later:** M3c, M3d; M4 (relationship record, tone, stickers, mood); M5 learning loop. Optional: the blind test, `/reg label recheck`, and whether the decide model ever goes live.
 
 ## Pointers
 
-- **Pipeline:** `core/pipeline.py` (gate → perceive → decide, in shadow). The live listener is in `main.py`.
+- **Pipeline:** `core/pipeline.py` (gate → perceive → decide). Live replies: `core/live.py` (Speaker), `core/recall.py` (earlier lines), `core/outbox.py`. The listener and the nightly dream clock are in `main.py`.
 - **Decide:** `core/decide.py` (M1 baseline, still used for direct addresses and limits), `core/decide_rules.py` (M2a), `core/decide_model.py` (M2b), `core/limits.py` (room state).
 - **Compose and voice:** `core/compose.py`, `core/voice.py`, `harness/rules/tells.json`.
-- **Bench:** `bench/` (`runner.py`, `tune.py`, `model_bench.py`, `compose_bench.py`); the CLI is `python -m bench --db <regular.db>`.
-- **Admin commands:** `core/admin.py` (help text), `core/people_admin.py`, `core/llm.py` (`ModelAdmin`), `core/outbox.py` (`SendAdmin`).
+- **Memory:** `offline/dream.py` (the verifier), `offline/dream_pass.py` (the model half), `offline/dream_admin.py`, `offline/dream_bench.py`; tables in `services/schema.sql`.
+- **Bench:** `bench/` (`runner.py`, `tune.py`, `model_bench.py`, `compose_bench.py`), plus `offline/dream_bench.py`; the CLI is `python -m bench --db <regular.db>`.
+- **Admin commands:** `core/admin.py` (help text), `core/people_admin.py`, `core/llm.py` (`ModelAdmin`), `core/outbox.py` (`SendAdmin`), `offline/dream_admin.py` (`/reg dream`).
