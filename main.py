@@ -19,7 +19,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.llm import make_call, make_model_of
-from .adapter.outbound import reply_admin_dm, send_group_text
+from .adapter.outbound import react_group_msg, reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
 from .bench.situations import forget_sender
@@ -106,7 +106,8 @@ class Regular(Star):
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases,
                                  params=load_params(self.data_dir))
         self._refresh_opt_outs()
-        self.speaker = Speaker(self.pipeline, self.models, self.persona, self.outbox, deliver=self._deliver)
+        self.speaker = Speaker(self.pipeline, self.models, self.persona, self.outbox, deliver=self._deliver,
+                               react=self._react)
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
         self.learner = Janitor(self._learn, interval_s=300)  # automatic labels from the group's reactions
@@ -233,6 +234,11 @@ class Regular(Star):
             logger.info(f"[regular] send {job.origin} -> {len(job.parts)} part(s): {', '.join(result)}")
         except Exception:
             logger.exception("[regular] send failed")
+
+    async def _react(self, scope_id: str, msg_id: str, emoji_id: str) -> None:
+        """An emoji on a group message (send_mode on only; core/live checks that)."""
+        platform = scope_id.split(":", 1)[0]
+        await react_group_msg(self.context, platform, msg_id.rsplit(":", 1)[-1], emoji_id)
 
     def _learn(self) -> None:
         """Every 5 minutes: label what the group's reactions have settled (core/feedback)."""

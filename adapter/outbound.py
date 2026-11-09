@@ -30,3 +30,6 @@ async def send_group_text(context, platform_id: str, group_id: str, text: str):
     if isinstance(ret, dict):
         return ret.get("message_id")
     return None
+
+
+from .actions import react_group_msg  # noqa: E402,F401 (no astrbot import: tested directly)

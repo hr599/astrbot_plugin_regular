@@ -11,7 +11,8 @@ share cap) and two people talking at once can't get two replies at once.
 
 Direct addresses get one retry when the model call fails, and a short canned
 line when the budget is spent (design doc: "an @ still gets a short canned
-in-character line, no model call"). Reactions (emoji) aren't sent yet.
+in-character line, no model call"). When decide says "react", an emoji goes on
+the turn's last message (core/reactions: no model call, a cap per hour).
 Every turn leaves a trace (ended_at="live", numbers and rule names only).
 
 Pure Python: main.py passes the delivery coroutine; tests pass fakes.
@@ -30,6 +31,7 @@ from .decide_model import render_chat
 from .decide import Msg, merged_msg
 from .decide_rules import decide_m2, rhythm_state
 from .moments import stored_moments
+from . import reactions as rx
 
 PAUSE_S = 4.0
 TURN_MAX_S = 15.0
@@ -50,7 +52,11 @@ class _Turn:
 class Speaker:
     def __init__(self, pipeline, client, persona, outbox, deliver: Callable[[Any], Awaitable[Any]], *,
                  clock: Callable[[], float] = time.time, sleep=asyncio.sleep,
-                 pause_s: float = PAUSE_S, turn_max_s: float = TURN_MAX_S, rng: random.Random | None = None):
+                 pause_s: float = PAUSE_S, turn_max_s: float = TURN_MAX_S, rng: random.Random | None = None,
+                 react: Callable[[str, str, str], Awaitable[Any]] | None = None,
+                 reaction_rules: dict[str, Any] | None = None):
+        """react(scope_id, msg_id, emoji_id): puts an emoji reaction on a stored
+        message (main.py: OneBot set_msg_emoji_like). None: reactions are traced only."""
         self.p = pipeline
         self.client = client
         self.persona = persona
@@ -64,6 +70,9 @@ class Speaker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._p90: dict[str, tuple[float, int | None]] = {}
         self.tasks: set[asyncio.Task] = set()
+        self.react = react
+        self.rx_rules = reaction_rules if reaction_rules is not None else rx.load_rules()
+        self.rx_cap = rx.Cap(int(self.rx_rules.get("per_hour", 20)))
 
     # ------------------------------------------------------------ intake
     def on_moment(self, scope_id: str, m: Msg) -> None:
@@ -132,6 +141,9 @@ class Speaker:
         rule = d.reasons.get("rule")
         direct = d.address_kind == "explicit"
         info: dict[str, Any] = {"action": d.action, "rule": rule, "direct": direct, "version": VERSION}
+        if d.action == "react":
+            await self._react(scope_id, m, info, now)
+            return
         if d.action != "reply":
             self._trace(scope_id, m.msg_id, d.action, info)
             return
@@ -168,6 +180,30 @@ class Speaker:
         info["parts"] = len(prep.job.parts)
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
+
+    async def _react(self, scope_id: str, m: Msg, info: dict[str, Any], now: int) -> None:
+        """An emoji on the turn's last message. No model call; a cap per group per
+        hour; never on a poke (nothing to react to) or another bot's message."""
+        if m.kind != "message" or m.from_bot:
+            info["skipped"] = "poke" if m.kind != "message" else "bot"
+            self._trace(scope_id, m.msg_id, "react", info)
+            return
+        favs, total = rx.group_favourites(self.p.store, scope_id, now - 30 * 86400)
+        emoji = rx.pick(m.text, m.media, favs, total, self.rx_rules, self.rng)
+        info["emoji"] = emoji
+        if self.outbox.mode != "on" or self.react is None:
+            info["dry"] = True  # dry: decided and traced, not sent
+            self._trace(scope_id, m.msg_id, "react", info)
+            return
+        if not self.rx_cap.take(scope_id, now):
+            info["refused"] = f"reaction cap: {self.rx_cap.per_hour} per hour"
+            self._trace(scope_id, m.msg_id, "react", info)
+            return
+        try:
+            await self.react(scope_id, m.msg_id, emoji)
+        except Exception as e:  # noqa: BLE001 - a reaction that didn't land is just quiet
+            info["error"] = type(e).__name__
+        self._trace(scope_id, m.msg_id, "react", info)
 
     # ------------------------------------------------------------ helpers
     def _group_p90(self, scope_id: str) -> int | None:
