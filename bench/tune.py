@@ -104,6 +104,7 @@ def evaluate(runs: list[Run]) -> dict[str, Any]:
         return {"labeled": n, "balanced_accuracy": round(sum(rec) / len(rec), 3) if rec else None,
                 "action_agreement": round(agree / n, 3) if n else None,
                 "decided_by": by,
+                "confusion": conf,
                 "recall": {a: (round(conf[a][a] / sum(conf[a].values()), 3) if sum(conf[a].values()) else None)
                            for a in conf}}
     people = sum(r.metrics["moments"] for r in runs)

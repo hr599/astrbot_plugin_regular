@@ -374,6 +374,31 @@ replies is the next step, after you've read some drafts.
 Not yet: live decide doesn't wait for a speaker's burst to end (the bench does);
 that comes with live replies in M2c.
 
+## Image captions
+
+With `caption_images` on (the default), every photo posted in a watched group is
+described once, on arrival, by the caption model (`provider_caption`, e.g.
+deepseek-flash, which takes images). Decide, compose and your `/reg label` view
+then show `[图片：一碗烤冷面，上面撒了葱花]` instead of `[图片]`.
+
+- **What's kept:** only the description text and a content hash (to reuse a
+  description when the same image is posted again). The image itself is fetched
+  from QQ's image servers into memory and dropped after the call.
+- **What it won't do:** name or guess who's in a photo; copy QQ, phone or ID
+  numbers from screenshots (long digit runs become `[号码]`); describe stickers.
+  Text inside an image is treated like any chat text: data, never instructions.
+- **Lifetime:** a description lives as long as a message showing it. Recall,
+  `/reg forget` and the transcript retention delete it; a forget during the
+  call writes nothing.
+- **Cost:** about ¥0.001 per photo on the DeepSeek budget. The daily cap
+  applies, with a worst-case allowance per image.
+- **Status:** `/reg status` shows `captions` (on/off, and counts since start:
+  described, reused, skipped, failed).
+
+Live decide doesn't see a photo's own description yet: it arrives a few seconds
+after the message. The surrounding context does, and live replies (M2c part 2)
+will wait for it.
+
 ## Live replies (M2c part 2)
 
 With `send_mode` set to `on` (`/reg send on` in the admin DM), 阿灯 talks in the

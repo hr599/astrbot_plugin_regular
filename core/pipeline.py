@@ -15,6 +15,7 @@ from typing import Any, Callable
 
 from . import limits
 from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, display_name, name_addressed
+from .captions import by_position
 from .decide_rules import POLICY as M2_POLICY, decide_m2
 from .limits import LimitState
 from .moments import stored_moments
@@ -34,12 +35,14 @@ class Pipeline:
         admin_handler: Callable[[ChatEvent], str] | None = None,
         aliases: tuple[str, ...] = DEFAULT_ALIASES,
         params: dict[str, Any] | None = None,
+        captions: bool = False,
     ):
         """params: the M2 rules' numbers (decide_rules.load_params). Given, shadow
         decide runs M2 and traces also keep what the M1 baseline would have done;
         None keeps the baseline alone."""
         self.store = store
         self.params = params
+        self.captions = captions  # flag photos for describing (main.py fetches and calls the model)
         self.gate_cfg = gate_cfg
         self.admin_handler = admin_handler
         self.aliases = aliases
@@ -56,7 +59,9 @@ class Pipeline:
         if not msg_id:
             return []
         out = []
-        for r in self.store.before(msg_id, n):
+        rows = self.store.before(msg_id, n)
+        caps = self.store.captions_for(r["msg_id"] for r in rows)
+        for r in rows:
             mentions = json.loads(r["mentions"]) if r["mentions"] else []
             out.append(Msg(
                 msg_id=r["msg_id"], ts=r["ts"], sender=str(r["person_id"]),
@@ -65,6 +70,7 @@ class Pipeline:
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
                 name=display_name(r["sender_name"], self.store.uid_of(r["person_id"])),
+                captions=by_position(caps.get(r["msg_id"])),
             ))
         return out
 
@@ -235,6 +241,8 @@ class Pipeline:
         )
         shadow = self._shadow(moment, ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
+        photos = p.media_kinds.count("image")  # stickers are "sticker": not described
+        caption_photos = photos if (self.captions and stored and photos and not from_bot) else 0
         reasons = {
             "gate": verdict.reason,
             "stored": stored,
@@ -248,6 +256,7 @@ class Pipeline:
             # the plugin, was purged, or quotes the bot (never stored)
             "reply_found": self.store.has_message(p.reply_to) if p.reply_to else None,
             "image_subtypes": p.image_subtypes,
+            "caption_photos": caption_photos,
             "injection_flags": p.injection_flags,
             "media": p.media_kinds,
             "mode": "observe_only",
