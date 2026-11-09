@@ -33,6 +33,7 @@ class Op:
     contra: list[Evidence] = field(default_factory=list)  # revise/retire: what contradicts it
     claim_id: int | None = None  # reinforce/revise/retire target
     merge_ids: list[int] = field(default_factory=list)  # merge: claims folded into claim_id
+    due: str | None = None  # intention: YYYY-MM-DD (M3); the memory expires 3 days after it
 
     @classmethod
     def from_json(cls, d: dict[str, Any]) -> "Op":

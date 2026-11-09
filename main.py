@@ -24,7 +24,7 @@ from .adapter.media import fetch_photos
 from .adapter.actions import send_private_text
 from .adapter.outbound import react_group_msg, reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
-from .bench.report import forget_reports
+from .bench.report import forget_reports, prune_reports
 from .bench.situations import forget_sender
 from .core.admin import AdminCommands
 from .core import feedback
@@ -40,6 +40,8 @@ from .core.outbox import Outbox, SendAdmin, deliver
 from .core.persona import load_persona
 from .core.people_admin import PeopleAdmin
 from .core.pipeline import Pipeline
+from .offline import dream_pass as dp
+from .offline.dream_admin import DreamAdmin
 from .services.debug import RawDumper, build_bundle
 from .services.maintenance import Janitor
 from .services.store import Store
@@ -104,6 +106,7 @@ class Regular(Star):
             people=PeopleAdmin(self.store, self.gate_cfg, watched=lambda: self.gate_cfg.group_ids,
                                save_paused=self._save_paused, forget_files=self._forget_files),
             models=ModelAdmin(self.models, self.budget),
+            dreamer=None,  # set below, once the pipeline exists
             sender=SendAdmin(self.outbox, watched=lambda: self.gate_cfg.group_ids,
                              paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
                              scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}",
@@ -116,6 +119,19 @@ class Regular(Star):
         self._refresh_opt_outs()
         self.speaker = Speaker(self.pipeline, self.models, self.persona, self.outbox, deliver=self._deliver,
                                react=self._react, notify=self._notify_owner)
+        # M3a: the nightly dream pass (dry only: reports, no memory changes)
+        self.dream_mode = str(config.get("dream_mode", "off") or "off")
+        if self.dream_mode not in ("off", "dry"):
+            logger.warning(f"[regular] dream_mode {self.dream_mode!r} isn't available yet (M3a): using dry")
+            self.dream_mode = "dry"
+        self._dreaming = False
+        self._dreamt: set[tuple[str, int]] = set()  # (scope, night) done this process
+        self.admin.dreamer = DreamAdmin(
+            self.store, mode=lambda: self.dream_mode, save_mode=self._save_dream_mode, run_now=self._dream_now,
+            scopes=self._dream_scopes, scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}",
+            spent_tonight=lambda: dp.spent_tonight_usd(self._dream_env(""), int(time.time())),
+            night_cap=self._dream_cap)
+        self.dreamer_clock = Janitor(self._dream_tick, interval_s=300)
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
         self.learner = Janitor(self._learn, interval_s=300)  # automatic labels from the group's reactions
@@ -133,6 +149,8 @@ class Regular(Star):
                 self.janitor.start()
             if not self.learner.running:
                 self.learner.start()
+            if not self.dreamer_clock.running:
+                self.dreamer_clock.start()
             if not self._isolation_checked:
                 self._isolation_checked = True
                 self._check_isolation()
@@ -218,6 +236,7 @@ class Regular(Star):
             "raw_dump": "on" if self.dumper.enabled else "off",
             "captions": ("on: " + json.dumps(cap.as_trace(self.caption_stats), ensure_ascii=False)
                          if self.caption_images else "off"),
+            "memory": self.admin.dreamer.status(),
             "retention_days": self._retention_days(),
             **self.store.stats(),
         }
@@ -324,6 +343,84 @@ class Regular(Star):
             for k, v in c.items():
                 self.feedback_stats[k] = self.feedback_stats.get(k, 0) + v
 
+    # ---- dreaming (M3a) -----------------------------------------------------
+    def _dream_cap(self) -> float:
+        return float(self.config.get("dream_budget_usd", dp.NIGHT_CAP_USD) or dp.NIGHT_CAP_USD)
+
+    def _dream_scopes(self) -> list[str]:
+        return [sc for sc in self.store.group_scopes(self.gate_cfg.group_ids)
+                if sc.rsplit(":", 1)[-1] not in self.gate_cfg.paused_groups]
+
+    def _admin_uids(self) -> frozenset:
+        try:
+            return frozenset(str(x).strip() for x in (self.context.get_config().get("admins_id") or []))
+        except Exception:
+            return frozenset()
+
+    def _dream_env(self, scope_id: str, trigger: str = "night") -> "dp.Env":
+        gid = scope_id.rsplit(":", 1)[-1]
+        mode = self.dream_mode
+        return dp.Env(self.store, self.models, scope_id, mode=mode, trigger=trigger,
+                      bot_uids=frozenset(self.gate_cfg.bot_uids), admin_uids=self._admin_uids(),
+                      persona_core=self.persona.core, report_dir=self.data_dir / "dream",
+                      still_on=lambda: self.dream_mode == mode and gid not in self.gate_cfg.paused_groups,
+                      night_cap_usd=self._dream_cap(), usd_to_cny=self.budget.usd_to_cny,
+                      min_new=dp.MIN_NEW if trigger == "night" else 1)
+
+    async def _dream_now(self, scopes: list[str]) -> dict[str, dict]:
+        if self._dreaming:
+            raise RuntimeError("a dream run is already going")
+        self._dreaming = True
+        try:
+            out = {}
+            for sc in scopes:
+                out[sc] = await dp.run_scope(self._dream_env(sc, "now"))
+            return out
+        finally:
+            self._dreaming = False
+
+    def _dream_tick(self) -> None:
+        """Every 5 minutes: after 04:30 Beijing, each group dreams once a night."""
+        if self.dream_mode == "off" or self._dreaming:
+            return
+        now = int(time.time())
+        night = dp.night_start(now)
+        todo = []
+        for sc in self._dream_scopes():
+            if (sc, night) in self._dreamt:
+                continue
+            if self.store.db.execute("SELECT 1 FROM dream_runs WHERE scope_id=? AND trigger='night' AND started>=?",
+                                     (sc, night)).fetchone():
+                self._dreamt.add((sc, night))
+                continue
+            todo.append(sc)
+        if not todo:
+            return
+
+        async def go():
+            self._dreaming = True
+            try:
+                for sc in todo:
+                    self._dreamt.add((sc, night))
+                    s = await dp.run_scope(self._dream_env(sc, "night"))
+                    logger.info(f"[regular] dream {sc.rsplit(':', 1)[-1]}: {s.get('stopped') or 'done'}, "
+                                f"{len(s.get('runs', []))} run(s)")
+            except Exception:
+                logger.exception("[regular] dream failed")
+            finally:
+                self._dreaming = False
+        task = asyncio.create_task(go())
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def _save_dream_mode(self, mode: str) -> None:
+        self.dream_mode = mode
+        self.config["dream_mode"] = mode
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("[regular] could not persist dream_mode")
+
     def _save_send_mode(self, mode: str) -> None:
         self.config["send_mode"] = mode
         try:
@@ -345,7 +442,7 @@ class Regular(Star):
     def _forget_files(self, uid: str, sender: str | None) -> dict:
         n, broken = (forget_sender(self.data_dir / "bench" / "recordings", sender) if sender else (0, []))
         return {"raw": self.dumper.forget(uid), "recordings": n, "broken": broken,
-                "reports": forget_reports(self.data_dir / "bench" / "runs")}
+                "reports": forget_reports(self.data_dir / "bench" / "runs") + forget_reports(self.data_dir / "dream")}
 
     def _retention_days(self) -> int:
         return max(1, int(self.config.get("transcript_retention_days", 30) or 30))
@@ -357,6 +454,7 @@ class Regular(Star):
         cutoff = int(time.time()) - self._retention_days() * 86400
         n = self.store.purge_before(cutoff)
         self.dumper.prune()
+        prune_reports(self.data_dir / "dream", days=30)  # dream reports quote the chat
         if n:
             logger.info(f"[regular] retention: removed {n} old messages")
 
@@ -364,5 +462,6 @@ class Regular(Star):
         for t in list(self._tasks) + list(self.speaker.tasks):
             t.cancel()
         await self.learner.stop()
+        await self.dreamer_clock.stop()
         await self.janitor.stop()
         self.store.close()
