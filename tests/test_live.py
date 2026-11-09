@@ -283,6 +283,60 @@ class Review36Tests(unittest.TestCase):
                 self.assertEqual(w.qq, ["在的"] if start == "on" else [])
                 self.assertEqual(w.traces()[-1][0], "reply")
 
+    def test_a_mode_change_during_the_pause_drops_the_turn(self):
+        # review round 2: the state is fixed at intake, not when composing starts
+        for start, flips in (("dry", ["on"]), ("on", ["off", "on"])):
+            with self.subTest(start=start, flips=flips):
+                w = Live(["在的"], mode=start)
+                self.real_delivery(w)
+
+                async def run():
+                    w.post(1, at_bot("在吗"))
+                    await asyncio.sleep(0.01)  # inside the 4 s (here 0.05 s) pause
+                    for f in flips:
+                        w.outbox.set_mode(f)
+                    await w.settle()
+                asyncio.run(run())
+                self.assertEqual((w.qq, w.prompts), ([], []))
+                self.assertEqual(w.traces()[-1][0], "cancelled")
+
+    def test_a_mode_change_while_waiting_for_the_group_lock_drops_the_turn(self):
+        w = Live(["一", "二"], mode="dry")
+        self.real_delivery(w)
+        slow = w.speaker.deliver
+
+        async def slow_deliver(job):
+            await asyncio.sleep(0.05)
+            w.outbox.set_mode("on")  # while the second turn waits for the lock
+            await slow(job)
+        w.speaker.deliver = slow_deliver
+
+        async def run():
+            w.post(1, at_bot("在吗"), uid="20002")
+            w.post(2, at_bot("你好"), uid="30003", name="小李")
+            await w.settle()
+        asyncio.run(run())
+        self.assertEqual(w.qq, [])
+        self.assertIn("cancelled", [d for d, _ in w.traces()])
+
+    def test_recalling_the_first_part_of_a_merged_turn_cancels_it(self):
+        w = Live()
+        self.real_delivery(w)
+
+        def recall_first():
+            w.store.recall(f"{SCOPE}:1")
+            return "好"
+        w.answers = [recall_first]
+
+        async def run():
+            w.post(1, at_bot("帮我看看这个"))
+            await asyncio.sleep(0.01)
+            w.post(2, "急")
+            await w.settle()
+        asyncio.run(run())
+        self.assertIn("帮我看看这个", w.prompts[0])  # it was in the prompt...
+        self.assertEqual(w.qq, [])                   # ...so the reply must not go out
+
     def test_a_recall_between_parts_stops_the_rest(self):
         w = Live(["好的\n马上来"])
         self.real_delivery(w, between_parts=lambda: w.store.recall(f"{SCOPE}:1"))
