@@ -21,6 +21,7 @@ Pure Python: main.py passes the delivery coroutine; tests pass fakes.
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 import time
 from dataclasses import dataclass, field, replace
@@ -33,7 +34,9 @@ from .decide_rules import decide_m2, rhythm_state
 from .moments import stored_moments
 from . import reactions as rx
 
+log = logging.getLogger("astrbot")  # AstrBot's own logger name, so failures show up in its log
 PAUSE_S = 4.0
+UNPROMPTED_PER_HOUR = 6  # default; decide.json's unprompted_per_hour wins
 TURN_MAX_S = 15.0
 CONTEXT = 30
 LOOKBACK_S = 6 * 3600  # how far back context is read
@@ -71,6 +74,7 @@ class Speaker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._p90: dict[str, tuple[float, int | None]] = {}
         self.tasks: set[asyncio.Task] = set()
+        self._unprompted: dict[str, Any] = {}  # scope -> times of replies not to a direct address
         self.react = react
         self.rx_rules = reaction_rules if reaction_rules is not None else rx.load_rules()
         self.rx_cap = rx.Cap(int(self.rx_rules.get("per_hour", 20)))
@@ -120,7 +124,8 @@ class Speaker:
         async with lock:
             try:
                 await self._speak(scope_id, turn, snap)
-            except Exception as e:  # noqa: BLE001 - a failed turn is a quiet one
+            except Exception as e:  # noqa: BLE001 - a failed turn is a quiet one, but never a silent one
+                log.exception("[regular] live turn failed (stayed quiet)")
                 self._trace(scope_id, None, "error", {"error": type(e).__name__})
 
     def _moments(self, scope_id: str, turn: list) -> tuple[Msg | None, list[Msg], list[str]]:
@@ -185,6 +190,16 @@ class Speaker:
         if d.action != "reply":
             self._trace(scope_id, m.msg_id, d.action, info)
             return
+        if not direct and d.reasons.get("rule") != "crisis":
+            # a safety net under the rules: so many unprompted replies an hour, then quiet
+            # until someone addresses him (live, Nov 9: he hit the 20-message cap quickly)
+            cap = int((params or {}).get("unprompted_per_hour", UNPROMPTED_PER_HOUR))
+            q = self._unprompted.setdefault(scope_id, [])
+            q[:] = [t for t in q if now - t < 3600]
+            if len(q) >= cap:
+                info["refused"] = f"unprompted cap: {cap} per hour"
+                self._trace(scope_id, m.msg_id, "quiet", info)
+                return
         rhythm = rhythm_state(now, (params or {}).get("_windows", []))
         c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm,
                           group_p90_len=self._group_p90(scope_id), rng=self.rng, gen=gen, alive=still_on)
@@ -221,6 +236,8 @@ class Speaker:
             pass
         prep.job.still_valid = still_valid  # and before every part it sends
         info["parts"] = len(prep.job.parts)
+        if not direct and rule != "crisis":
+            self._unprompted.setdefault(scope_id, []).append(now)
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
 

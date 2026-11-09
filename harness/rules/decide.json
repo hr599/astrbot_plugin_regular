@@ -1,5 +1,5 @@
 {
-  "_doc": "M2 decide rules (design doc, Decide row): starting values, tuned on your dev labels with /reg bench tune; a tuned copy lives in the data folder (decide_params.json) and wins over this file. Times UTC+8; rhythm windows come from harness/persona/persona.json.",
+  "_doc": "M2 decide rules (design doc, Decide row): starting values, tuned on your dev labels with /reg bench tune; a tuned copy lives in the data folder (decide_params.json) and wins over this file. Times UTC+8; rhythm windows come from harness/persona/persona.json. follow_up_max: follow-up replies in a row to one person before they must address him again. unprompted_per_hour: live replies that weren't to a direct address (@, quote, poke), per group per hour.",
   "addressed": {
     "vocative": 0.85,
     "name_question": 0.8,
@@ -7,7 +7,8 @@
     "name": 0.6,
     "about": 0.3,
     "follow_up_window_s": 120,
-    "elsewhere_cap": 0.2
+    "elsewhere_cap": 0.2,
+    "follow_up_max": 1
   },
   "reply_addressed": 0.75,
   "react_addressed": 0.5,
@@ -83,5 +84,6 @@
     "赶due",
     "熬夜",
     "通宵"
-  ]
+  ],
+  "unprompted_per_hour": 6
 }
