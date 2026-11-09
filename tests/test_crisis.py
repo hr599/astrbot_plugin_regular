@@ -110,6 +110,69 @@ class LiveCrisisTests(unittest.TestCase):
         self.assertNotIn(SAD, row["reasons"])  # the trace holds no text
 
 
+class Review38Tests(unittest.TestCase):
+    """PR #38 review findings."""
+
+    def test_a_forget_during_the_dm_records_nothing(self):
+        w = live()
+
+        async def slow_notify(scope_id, text):
+            w.store.forget_person("aiocqhttp", "20002", stop=True)  # while the DM is going out
+            w.dms.append(text)
+        w.speaker.notify = slow_notify
+        run(w, (1, SAD, "20002", "小王"))
+        self.assertEqual(w.store.db.execute("SELECT COUNT(*) FROM traces WHERE ended_at='crisis_dm'").fetchone()[0], 0)
+
+    def test_forget_also_clears_a_crisis_record_by_person(self):
+        w = run(live(), (1, SAD, "20002", "小王"))
+        row = w.store.db.execute("SELECT reasons FROM traces WHERE ended_at='crisis_dm'").fetchone()
+        self.assertIsNotNone(row)
+        w.store.db.execute("UPDATE traces SET msg_id=NULL WHERE ended_at='crisis_dm'")  # even without the msg link
+        w.store.forget_person("aiocqhttp", "20002")
+        self.assertEqual(w.store.db.execute("SELECT COUNT(*) FROM traces WHERE ended_at='crisis_dm'").fetchone()[0], 0)
+
+    def test_crisis_words_earlier_in_an_a_b_a_turn_count(self):
+        for with_b in (True, False):
+            with self.subTest(with_b=with_b):
+                w = live()
+                posts = [(1, at_bot(SAD), "20002", "小王")]
+                if with_b:
+                    posts.append((2, "怎么了", "30003", "小李"))
+                posts.append((3, "你能陪我聊会儿吗", "20002", "小王"))
+                run(w, *posts)
+                self.assertEqual((len(w.checks), len(w.dms)), (1, 1))
+                self.assertIn(SAD, w.checks[0].split("→ ", 1)[1].split("\n", 1)[0])  # checks the line that said it
+                self.assertIn(SAD, w.dms[0][1])
+                self.assertEqual(len(w.sent), 1)
+
+    def test_a_pause_stops_the_dm(self):
+        for when in ("waiting", "checking"):
+            with self.subTest(when=when):
+                w = live()
+                group = SCOPE.rsplit(":", 1)[-1]
+                if when == "checking":
+                    def pause_then_answer():
+                        w.p.gate_cfg.paused_groups.add(group)
+                        return '{"sincere": true}'
+                    w.sincere = pause_then_answer
+
+                async def go():
+                    w.post(1, SAD, "20002", "小王")
+                    await asyncio.sleep(0.01)
+                    if when == "waiting":
+                        w.p.gate_cfg.paused_groups.add(group)
+                    await w.settle()
+                asyncio.run(go())
+                self.assertEqual(w.dms, [])
+
+    def test_the_dm_doesnt_claim_a_reply_went_out(self):
+        t = crisis.dm_text("555", Msg("x", E, "7", SAD, name="小王"), E)
+        self.assertNotIn("已经在群里", t)
+        w = run(live(mode="dry"), (1, SAD, "20002", "小王"))
+        self.assertEqual((len(w.dms), len(w.sent) if w.outbox.mode == "on" else 0), (1, 0))
+        self.assertNotIn("已经", w.dms[0][1])
+
+
 class CaptionWaitTests(unittest.TestCase):
     def test_waits_for_a_photo_being_described(self):
         w = Live(["好香"])

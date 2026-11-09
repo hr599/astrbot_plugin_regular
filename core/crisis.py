@@ -74,7 +74,7 @@ def dm_text(group_id: str, m: Msg, now: int) -> str:
     said = re.sub(r"\s+", " ", m.text or "").strip()
     said = said if len(said) <= SNIPPET else said[:SNIPPET] + "…"
     return (f"阿灯在群 {group_id} 里看到 {who} {t} 说：“{said}”\n"
-            f"看起来可能是真心的，他已经在群里回了一句关心的话。你方便的话，私下问问他？"
+            f"看起来可能是真心的。你方便的话，私下问问他？"
             f"（这条只发给你；同一个人一天最多提醒一次。心理援助热线：12356）")
 
 

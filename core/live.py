@@ -193,20 +193,31 @@ class Speaker:
         st = self.p._limit_state(scope_id, now, m.msg_id)
         params = self.p.params
         verdict = None
-        if m.kind == "message" and not m.from_bot:
-            sig = signals(m.text or "")
-            if sig.crisis_cue and not sig.crisis_joking:
-                verdict = await crisis.check(self.client, m, ctx, now, alive=still_on)
-                if not still_on():
-                    self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "changed during the crisis check",
-                                                                   "version": VERSION})
-                    return
-                if verdict == "not":
-                    from .decide_rules import load_params
-                    params = {**(params if params is not None else load_params()), "_not_sincere": True}
-                else:  # sincere, or couldn't tell: care, and tell the owner
-                    await self._crisis_dm(scope_id, m, now)
+        if self._paused(scope_id):
+            self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "group paused", "version": VERSION})
+            return
+        # every message of the turn, not only the target: in an A-B-A turn the
+        # target is A's last line and the earlier one sits in the context (PR #38 review)
+        parts = [x for x in ctx if x.msg_id in used] + [m]
+        hit = next((x for x in parts if x.kind == "message" and not x.from_bot
+                    and (lambda g: g.crisis_cue and not g.crisis_joking)(signals(x.text or ""))), None)
+        if hit is not None:
+            before = [x for x in ctx + [m] if x.msg_id != hit.msg_id and x.ts <= hit.ts]
+            verdict = await crisis.check(self.client, hit, before, now, alive=still_on)
+            if not still_on():
+                self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "changed during the crisis check",
+                                                               "version": VERSION})
+                return
+            if verdict == "not":
+                from .decide_rules import load_params
+                params = {**(params if params is not None else load_params()), "_not_sincere": True}
+            elif not self._paused(scope_id):  # sincere, or couldn't tell: care, and tell the owner
+                await self._crisis_dm(scope_id, hit, now, still_valid)
         d = decide_m2(m, ctx, now, aliases=self.p.aliases, state=st, params=params)
+        if verdict in ("sincere", "unknown") and d.action != "reply":
+            # the crisis words were earlier in the turn (A-B-A): decide only read the last
+            # line, but the turn still gets a caring reply (design doc: never left alone)
+            d = replace(d, action="reply", reasons={**d.reasons, "rule": "crisis"})
         rule = d.reasons.get("rule")
         direct = d.address_kind == "explicit"
         info: dict[str, Any] = {"action": d.action, "rule": rule, "direct": direct, "version": VERSION}
@@ -257,8 +268,13 @@ class Speaker:
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
 
-    async def _crisis_dm(self, scope_id: str, m: Msg, now: int) -> None:
-        """A private DM to the owner, at most once per person per day."""
+    def _paused(self, scope_id: str) -> bool:
+        return scope_id.rsplit(":", 1)[-1] in self.p.gate_cfg.paused_groups
+
+    async def _crisis_dm(self, scope_id: str, m: Msg, now: int, still_valid) -> None:
+        """A private DM to the owner, at most once per person per day. Nothing is
+        recorded if the message was recalled or the person forgotten while it was
+        being sent (PR #38 review): a forgotten person's crisis is never re-saved."""
         info: dict[str, Any] = {"version": VERSION}
         if crisis.already_today(self.p.store, scope_id, m.sender, now):
             return
@@ -269,7 +285,8 @@ class Speaker:
                 await self.notify(scope_id, crisis.dm_text(scope_id.rsplit(":", 1)[-1], m, now))
             except Exception as e:  # noqa: BLE001 - the group reply still goes out
                 info["error"] = type(e).__name__
-        crisis.record_dm(self.p.store, scope_id, m.msg_id, m.sender, now, info, self.p.harness_version)
+        if still_valid():
+            crisis.record_dm(self.p.store, scope_id, m.msg_id, m.sender, now, info, self.p.harness_version)
 
     async def _react(self, scope_id: str, m: Msg, info: dict[str, Any], now: int, still_on) -> None:
         """An emoji on the turn's last message. No model call; a cap per group per
