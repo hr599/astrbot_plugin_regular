@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 afternoon: everything through #37 merged; 阿灯 going live. #38 (crisis check + owner DM, caption wait) in review: the last M2 piece.
+Last updated: 2026-11-09 evening: everything through #38 merged, so **M2 is done** and 阿灯 is live in the group. In review: #39 (fewer unprompted replies) and #40 (configurable, resettable send cap), both from the first live afternoon.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -78,7 +78,7 @@ chip in, and always answer when someone talks to it directly.
 
 ## Where things stand
 
-Milestones: M0 skeleton → M1 replay bench → **M2 speaking** (current) → M3 memory →
+Milestones: M0 skeleton → M1 replay bench → M2 speaking (done, live) → M3 memory →
 M4 social → M5 learning loop.
 
 - **Done.** M0, M1 and all the groundwork:
@@ -113,16 +113,18 @@ M4 social → M5 learning loop.
   - `core/live.py`: pause (4 s / max 15) → decide the merged turn (M2 rules) → compose → outbox → deliver under a per-group lock. One retry on an @'s model error; a canned line over budget. Nothing happens unless `send_mode` is `on` (or `dry`).
   - `core/feedback.py`, every 5 min: after a chime-in, engaged → reply, ignored or pushed back → quiet; an unanswered group question → reply. Schema v6 `auto_labels`; dev side only, never held out, never in the implied rate; hand labels win.
   - **#37, merged: emoji reactions.** No model call: the emoji comes from the message's cue (`harness/rules/reactions.json`), and half the time from the group's own favourites once it has reacted enough. 20 per group per hour; never into a paused group; `set_msg_emoji_like` in `adapter/actions.py`. **To check live:** that LLBot accepts the action and the ids show the expected faces.
-  - The crisis DM and the caption wait are in #38. **After #34 and #36 both merge:** `core/decide.py: merged_msg` must also merge `captions` (left out because #34 adds the field).
+  - **#38, merged: crisis moments and the caption wait.** Every crisis-cue line in the turn is checked by the decide model, latest first; sincere or can't tell → a caring reply and a private DM to the owner (`crisis_dm_to`, else `admins_id`), once per person per day, recorded only if still valid; all "not" → an ordinary message. Live turns wait up to 6 s for a photo caption in progress. **To check live:** the private DM arrives.
+- **First live afternoon (Nov 9).** The owner's findings: (1) after one @, he answered every line that person sent next (each reply reopened the follow-up window); (2) the 20/hour send cap ran out fast; the group is eager to chat. The background learning (automatic labels every 5 min) keeps running when the cap is hit: it only reads the chat.
+  - **#39, in review: fewer unprompted replies.** One follow-up per direct address (`addressed.follow_up_max: 1`); any new @, quote or name restarts it (also when the @ is merged with a plain line into one turn). Unprompted replies capped at 6 per group per hour (`unprompted_per_hour`); @s, quotes, pokes and crisis turns are never capped and never counted (by the turn's real crisis verdict, fixed after review).
+  - **#40, review passed: the send cap.** `send_cap_per_hour` (default 20, 1–60); admin DM `/reg send cap [N]` and `/reg send reset [group]`. A reset survives restarts (a `send_reset` trace) and keeps queued reservations.
 
 ## Next steps (in order)
 
 1. **Owner:** update the plugin, then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Check live: captions (`/reg status` → `captions`), that a reaction shows the expected face, and the first replies. Watch `mode`, `captions`, `learning`. `/reg label recheck` when there's time.
 2. **Image captions: #34, merged.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
-4. **To finish M2: #38, in review.** Crisis: a sincerity check by the decide model; sincere (or can't tell) → caring reply + a private DM to the owner (`crisis_dm_to`, else `admins_id`), once per person per day; not sincere → ordinary message. Live turns wait up to 6 s for a photo caption in progress. With #38 merged, M2 is done (the bake-off was dropped; the blind test is optional). **To check live:** the private DM arrives.
+4. **Merge #40 and #39**, then watch a day live: how many unprompted replies per hour, and whether he now lets threads go. Tune `unprompted_per_hour` / `follow_up_max` in decide.json if he's too quiet or too chatty.
 5. **After going live:** a numbers-only check of the first days (replies and reactions per day, engaged vs ignored, missed questions, cost), then retune with the automatic labels.
-5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
 6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
 7. **M2d bake-off: dropped (owner's call, Nov 9).** deepseek-flash is good enough for replies, judging by the real drafts. To revisit, point `provider_reply` at a v4-pro provider and rerun `/reg bench compose`. The blind test (can the group tell him from a member?) is optional, after a while live.
 8. **Later:** M3 memory (the dream pass's model half), M4 tone and stickers, M5 learning loop.
