@@ -178,7 +178,7 @@ class ComposeTests(unittest.TestCase):
 
     def test_reads_the_room_first(self):
         self.assertIn("先读懂这段聊天", cm.INSTRUCTIONS)
-        self.assertIn("看不到内容", cm.INSTRUCTIONS)
+        self.assertIn("没看到内容", cm.INSTRUCTIONS)
         for raw, want in (('{"gist": "在吐槽", "reply": "哈哈"}', ("在吐槽", "哈哈")),
                           ('```json\n{"gist": "g", "reply": "r"}\n```', ("g", "r")),
                           ("哈哈", None), ('{"reply": "哈哈"}', None), ('{"gist": 1, "reply": "x"}', None),
