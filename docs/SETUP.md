@@ -444,6 +444,13 @@ kinds, cost; no text).
 
 To stop him at any time: `/reg send off`, or `/reg pause <group>`.
 
+**The hourly cap.** Each group gets at most `send_cap_per_hour` messages an hour
+(default 20; every part of a split reply counts). `/reg send cap N` changes it
+from the admin DM (saved to the config, at most 60: a low send rate also keeps
+the alt account clear of QQ's risk controls). `/reg send reset [group]` clears
+the current hour's count, for when the group is in a chatty mood; a restart
+within the hour won't count the old messages again.
+
 ## Crisis moments
 
 When a message sounds like someone may want to hurt themselves (不想活, 撑不下去…,

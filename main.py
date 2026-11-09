@@ -86,6 +86,7 @@ class Regular(Star):
         # 阿灯 v2 (task M): the prompt files, plus the leak check's protected texts and canary
         self.persona = load_persona(self.data_dir)
         self.outbox = Outbox(str(config.get("send_mode", "off") or "off"),
+                             cap=config.get("send_cap_per_hour", 20) or 20,
                              protected=self.persona.protected, canaries=self.persona.canaries,
                              allowed=self.persona.examples)
         self._seed_send_cap()
@@ -105,7 +106,8 @@ class Regular(Star):
             models=ModelAdmin(self.models, self.budget),
             sender=SendAdmin(self.outbox, watched=lambda: self.gate_cfg.group_ids,
                              paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
-                             scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}"),
+                             scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}",
+                             save_cap=self._save_send_cap, on_reset=self._save_send_reset),
         )
         self.caption_images = bool(config.get("caption_images", True))
         self.caption_stats = cap.Result()  # since start, numbers only (/reg status)
@@ -241,13 +243,33 @@ class Regular(Star):
 
     # ---- sending (task L) -------------------------------------------------
     def _seed_send_cap(self) -> None:
-        """The hourly group cap counts what was really sent, across restarts."""
+        """The hourly group cap counts what was really sent, across restarts (since the
+        last /reg send reset for that group)."""
         hour_ago = int(time.time()) - 3600
+        resets = {r["scope_id"]: r["t"] for r in self.store.db.execute(
+            "SELECT scope_id, MAX(ts) AS t FROM traces WHERE ended_at='send_reset' GROUP BY scope_id")}
         by_scope: dict[str, list[int]] = {}
         for r in self.store.db.execute("SELECT scope_id, ts FROM messages WHERE is_bot=1 AND ts>=?", (hour_ago,)):
+            if r["ts"] <= resets.get(r["scope_id"], 0):
+                continue
             by_scope.setdefault(r["scope_id"], []).append(r["ts"])
         for scope_id, times in by_scope.items():
             self.outbox.seed(scope_id, times)
+
+    def _save_send_cap(self, n: int) -> None:
+        self.config["send_cap_per_hour"] = n
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("[regular] could not persist send_cap_per_hour")
+
+    def _save_send_reset(self, gids: list[str]) -> None:
+        """Remember a /reg send reset in the store, so a restart within the hour doesn't
+        count the old messages again (_seed_send_cap)."""
+        now = int(time.time())
+        for sc in self.store.group_scopes(set(gids)):
+            self.store.trace(scope_id=sc, msg_id=None, ended_at="send_reset", decision=None,
+                             reasons={"gate": "admin"}, harness_version=self.pipeline.harness_version, ts=now)
 
     def _start_queued(self) -> None:
         while self.outbox.queue:

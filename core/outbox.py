@@ -31,7 +31,8 @@ from typing import Any
 from .voice import Hit, check, command_like, delays, split_parts
 
 MODES = ("off", "dry", "on")
-SEND_CAP_PER_HOUR = 20
+SEND_CAP_PER_HOUR = 20  # default; plugin config send_cap_per_hour, or /reg send cap N
+MAX_CAP_PER_HOUR = 60  # never above this: a low send rate also keeps the QQ account safe
 
 
 @dataclass
@@ -60,12 +61,14 @@ class Prepared:
 
 class Outbox:
     def __init__(self, mode: str = "off", *, rules: dict[str, Any] | None = None,
-                 protected: list[str] = (), canaries: list[str] = (), allowed: list[str] = ()) -> None:
+                 protected: list[str] = (), canaries: list[str] = (), allowed: list[str] = (),
+                 cap: int = SEND_CAP_PER_HOUR) -> None:
         self.mode = mode if mode in MODES else "off"
         self.rules = rules
         self.protected = list(protected)
         self.canaries = list(canaries)
         self.allowed = list(allowed)  # the persona's example lines (voice.leaked)
+        self.cap = clamp_cap(cap)
         self.queue: deque[Job] = deque()
         self._sent: dict[str, deque] = {}  # scope -> part timestamps (sent or dry), rolling hour
         self._reserved: dict[str, int] = {}  # scope -> parts queued or in flight, not yet sent
@@ -93,6 +96,11 @@ class Outbox:
             q.popleft()
         return len(q)
 
+    def reset_count(self, scope_id: str | None = None) -> None:
+        """/reg send reset: forget what was sent this hour (one group, or all)."""
+        for sc in ([scope_id] if scope_id else list(self._sent)):
+            self._sent[sc] = deque()
+
     def note_sent(self, scope_id: str, now: int) -> None:
         self._sent.setdefault(scope_id, deque()).append(now)
 
@@ -106,8 +114,8 @@ class Outbox:
         now = int(time.time()) if now is None else now
         if self.mode == "off":
             return Prepared(None, refused="sending is off (/reg send dry|on)")
-        if self.sent_last_hour(scope_id, now) + self._reserved.get(scope_id, 0) >= SEND_CAP_PER_HOUR:
-            return Prepared(None, refused=f"group cap: {SEND_CAP_PER_HOUR} messages in the last hour")
+        if self.sent_last_hour(scope_id, now) + self._reserved.get(scope_id, 0) >= self.cap:
+            return Prepared(None, refused=f"group cap: {self.cap} messages in the last hour")
         admin = origin == "admin_say"
         # the admin's own words: checked against themselves for specifics, so only
         # safety and style tells can hit, and style doesn't block
@@ -125,7 +133,7 @@ class Outbox:
             d.parts, d.delays = parts, delays(parts)
         # the cap counts parts already promised to other jobs, so two jobs prepared at
         # once can't both squeeze under it (issue #18); a job that won't fit is trimmed
-        room = SEND_CAP_PER_HOUR - self.sent_last_hour(scope_id, now) - self._reserved.get(scope_id, 0)
+        room = self.cap - self.sent_last_hour(scope_id, now) - self._reserved.get(scope_id, 0)
         parts, waits = d.parts[:room], d.delays[:room]
         job = Job(scope_id, group_id, parts, waits, origin, created=now, reply_to=reply_to,
                   mode=self.mode, gen=self.gen, reserved=len(parts))
@@ -145,7 +153,7 @@ class Outbox:
             return "group paused"
         # this job's own reserved parts are already inside the cap
         if self.sent_last_hour(job.scope_id, now) + self._reserved.get(job.scope_id, 0) - job.reserved \
-                >= SEND_CAP_PER_HOUR:
+                >= self.cap:
             return "group cap reached"
         if command_like(part):
             return "command-like part"
@@ -188,24 +196,56 @@ async def deliver(job: Job, outbox: Outbox, *, send, record, paused, clock, slee
 _SAY = re.compile(r"^\s*/?reg\s+say\s+(\d{1,12})\s+(.+)$", re.S | re.I)
 
 
+def clamp_cap(n) -> int:
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        n = SEND_CAP_PER_HOUR
+    return max(1, min(MAX_CAP_PER_HOUR, n))
+
+
 class SendAdmin:
     """/reg send on|off|dry and /reg say <group> <text> (admin DM only, via the gate)."""
 
-    def __init__(self, outbox: Outbox, *, watched, paused, save_mode, scope_of) -> None:
+    def __init__(self, outbox: Outbox, *, watched, paused, save_mode, scope_of,
+                 save_cap=None, on_reset=None) -> None:
         self.outbox = outbox
+        self.save_cap = save_cap  # (n) -> persist send_cap_per_hour
+        self.on_reset = on_reset  # (group ids) -> persist the reset time (survives a restart)
         self.watched = watched  # () -> configured group ids
         self.paused = paused  # () -> paused group ids
         self.save_mode = save_mode  # (mode) -> persist to plugin config
         self.scope_of = scope_of  # (platform, group id) -> scope id
 
     def handle(self, sub: str, args: list[str], platform: str, raw_text: str) -> str | None:
+        if sub == "send" and args and args[0].lower() == "cap":
+            if len(args) < 2:
+                return (f"每个群每小时最多 {self.outbox.cap} 条（上限 {MAX_CAP_PER_HOUR}）。"
+                        f"改：/reg send cap <数字>；清零本小时计数：/reg send reset [群号]")
+            if not args[1].isdigit():
+                return "用法：/reg send cap <数字>"
+            self.outbox.cap = clamp_cap(args[1])
+            if self.save_cap:
+                self.save_cap(self.outbox.cap)
+            note = f"（最多 {MAX_CAP_PER_HOUR}：发得太多 QQ 号容易被风控）" if int(args[1]) > MAX_CAP_PER_HOUR else ""
+            return f"好，每个群每小时最多 {self.outbox.cap} 条。{note}"
+        if sub == "send" and args and args[0].lower() == "reset":
+            gids = [args[1]] if len(args) > 1 else sorted(str(g) for g in self.watched())
+            if len(args) > 1 and args[1] not in {str(g) for g in self.watched()}:
+                return f"{args[1]} 不在观察列表里。"
+            for gid in gids:
+                self.outbox.reset_count(self.scope_of(platform, gid))
+            if self.on_reset:
+                self.on_reset(gids)
+            return f"已清零本小时的发送计数（{'、'.join(gids) or '无'}）。阿灯又可以说 {self.outbox.cap} 条了。"
         if sub == "send":
             if not args or args[0].lower() not in MODES:
-                return f"发送模式：{self.outbox.mode}。用法：/reg send off|dry|on（dry = 只记录不真发）"
+                return (f"发送模式：{self.outbox.mode}。用法：/reg send off|dry|on（dry = 只记录不真发）；"
+                        f"/reg send cap [数字]；/reg send reset [群号]")
             self.outbox.set_mode(args[0].lower())
             self.save_mode(self.outbox.mode)
             return {"off": "已关闭发送。", "dry": "试运行：会照常排队、检查、计时，但只记录不发出。",
-                    "on": "已开启发送。阿灯现在会真的在群里说话（目前只有 /reg say 会触发）。"}[self.outbox.mode]
+                    "on": "已开启发送。阿灯现在会在群里说话。"}[self.outbox.mode]
         if sub == "say":
             m = _SAY.match(raw_text or "")
             if not m:

@@ -243,3 +243,46 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CapTests(unittest.TestCase):
+    """Nov 9, first live afternoon: everyone wanted to chat; the owner asked for a
+    way to raise the hourly cap and to reset it."""
+
+    def setUp(self):
+        self.outbox = Outbox("on", cap=3)
+        self.saved = {}
+        self.resets = []
+        self.admin = SendAdmin(self.outbox, watched=lambda: {GROUP}, paused=lambda: set(),
+                               save_mode=lambda m: None, scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}",
+                               save_cap=lambda n: self.saved.update(cap=n), on_reset=self.resets.append)
+
+    def fill(self):
+        for i in range(3):
+            self.outbox.note_sent(SCOPE, 1000 + i)
+
+    def test_the_cap_is_configurable_and_bounded(self):
+        self.fill()
+        self.assertIn("group cap: 3", self.outbox.prepare("嗯", scope_id=SCOPE, group_id=GROUP, origin="reply",
+                                                          now=1010).refused)
+        self.assertIn("最多 5 条", self.admin.handle("send", ["cap", "5"], "aiocqhttp", ""))
+        self.assertEqual((self.outbox.cap, self.saved["cap"]), (5, 5))
+        self.assertIsNotNone(self.outbox.prepare("嗯", scope_id=SCOPE, group_id=GROUP, origin="reply", now=1010).job)
+        self.assertIn("最多 60", self.admin.handle("send", ["cap", "500"], "aiocqhttp", ""))
+        self.assertEqual(self.outbox.cap, 60)
+        self.assertEqual(Outbox("on", cap="abc").cap, SEND_CAP_PER_HOUR)
+        self.assertIn("每个群每小时最多 60 条", self.admin.handle("send", ["cap"], "aiocqhttp", ""))
+        self.assertIn("用法", self.admin.handle("send", ["cap", "x"], "aiocqhttp", ""))
+
+    def test_reset_clears_this_hours_count(self):
+        self.fill()
+        self.assertIsNone(self.outbox.prepare("嗯", scope_id=SCOPE, group_id=GROUP, origin="reply", now=1010).job)
+        reply = self.admin.handle("send", ["reset"], "aiocqhttp", "")
+        self.assertIn("已清零", reply)
+        self.assertEqual(self.resets, [[GROUP]])
+        self.assertIsNotNone(self.outbox.prepare("嗯", scope_id=SCOPE, group_id=GROUP, origin="reply", now=1010).job)
+        self.assertIn("不在观察列表", self.admin.handle("send", ["reset", "999"], "aiocqhttp", ""))
+
+    def test_mode_commands_still_work(self):
+        self.assertIn("off", self.admin.handle("send", [], "aiocqhttp", ""))
+        self.assertIn("已关闭", self.admin.handle("send", ["off"], "aiocqhttp", ""))

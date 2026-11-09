@@ -22,6 +22,7 @@ HELP = (
     "/reg optout|optin <QQ号>  不再记录 / 恢复记录某人\n"
     "/reg pause|resume [群号]  暂停 / 恢复观察（不写群号 = 全部）\n"
     "/reg send off|dry|on  发送开关（默认关；dry = 只记录不真发）\n"
+    "/reg send cap [N]  每群每小时最多发几条（默认 20，最多 60）；/reg send reset [群号] 清零本小时计数\n"
     "/reg say <群号> <话>  让阿灯在群里说一句（测试发送用，只查安全不查风格）\n"
     "/reg budget  看模型花费和每日上限\n"
     "/reg model test <角色>  用一句话试一下某个角色的模型（decide/reply/caption/dream/judge）\n"
