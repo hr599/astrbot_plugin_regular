@@ -395,9 +395,9 @@ then show `[图片：一碗烤冷面，上面撒了葱花]` instead of `[图片]
 - **Status:** `/reg status` shows `captions` (on/off, and counts since start:
   described, reused, skipped, failed).
 
-Live decide doesn't see a photo's own description yet: it arrives a few seconds
-after the message. The surrounding context does, and live replies (M2c part 2)
-will wait for it.
+A description arrives a few seconds after the photo. A live turn that includes a
+photo still being described waits for it, up to 6 seconds (only while one is
+actually in progress), so 阿灯 doesn't answer a photo he can't see.
 
 ## Live replies (M2c part 2)
 
@@ -419,6 +419,13 @@ How a reply happens (`core/live.py`):
    typing delays, and applies the hourly cap (20 per group).
 4. One group, one reply at a time: the next decision waits until this reply is
    sent, so it sees what he just said.
+
+**How chatty.** After he answers someone, their next message counts as talking to
+him once (`follow_up_max`, default 1); after that they address him again (@, a
+quote, his name) or he lets the conversation go. Replies that weren't to a direct
+address are capped at `unprompted_per_hour` (default 6) per group; @s, quotes and
+pokes are never capped by this (only by the hourly 20-message cap). Both are in
+`harness/rules/decide.json`, and a tuned `decide_params.json` can override them.
 
 An @ that hits a model error gets one retry; over the daily budget it gets a
 short canned in-character line instead of a model call.
@@ -443,6 +450,23 @@ from the admin DM (saved to the config, at most 60: a low send rate also keeps
 the alt account clear of QQ's risk controls). `/reg send reset [group]` clears
 the current hour's count, for when the group is in a chatty mood; a restart
 within the hour won't count the old messages again.
+
+## Crisis moments
+
+When a message sounds like someone may want to hurt themselves (不想活, 撑不下去…,
+not an obvious joke like "这作业要我命 哈哈"), the decide model first checks
+whether it's sincere or hyperbole (`core/crisis.py`). Then:
+- **Sincere:** 阿灯 replies with care in the group (the guardrails say how:
+  gently, no lecture, people they trust, the 12356 line), and **you get a private
+  DM** saying who, in which group, and what they said (shortened), so you can check
+  in as a friend. At most once per person per day.
+- **Not sincere:** an ordinary message; the usual rules decide.
+- **The check couldn't run** (model error, budget, no provider): treated as
+  sincere. A kind message too many is better than one too few.
+
+The DM goes to `crisis_dm_to` in the plugin config, or, if that's empty, to
+AstrBot's `admins_id`. It works with `send_mode` dry or on (not off). The trace
+for it holds a person id and no text, and `/reg forget` removes it.
 
 ## Learning from the group (automatic)
 

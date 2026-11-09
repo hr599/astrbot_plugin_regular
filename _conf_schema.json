@@ -68,6 +68,12 @@
     "default": true,
     "hint": "开着时，群里每张照片发出来会让 caption 模型（provider_caption）用一两句话描述一次，阿灯和 bench 就能“看到”图。只保存描述文字，图片本身不保存；不认人、不抄号码；表情包不描述。约 ¥0.001 一张，计入 DeepSeek 预算。"
   },
+  "crisis_dm_to": {
+    "description": "危机提醒私信给谁（QQ 号）",
+    "type": "list",
+    "default": [],
+    "hint": "群里有人看起来真心想伤害自己时，阿灯会在群里认真回一句，并私信提醒这里的人（同一个人一天最多一次）。不填就用 AstrBot 的管理员（admins_id）。只在发送模式为 dry 或 on 时生效。"
+  },
   "provider_decide": {
     "description": "模型：判断要不要说话（deepseek-flash）",
     "type": "string",

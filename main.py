@@ -21,6 +21,7 @@ from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.llm import make_call, make_model_of
 from .adapter.media import fetch_photos
+from .adapter.actions import send_private_text
 from .adapter.outbound import react_group_msg, reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
@@ -114,7 +115,7 @@ class Regular(Star):
                                  params=load_params(self.data_dir), captions=self.caption_images)
         self._refresh_opt_outs()
         self.speaker = Speaker(self.pipeline, self.models, self.persona, self.outbox, deliver=self._deliver,
-                               react=self._react)
+                               react=self._react, notify=self._notify_owner)
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
         self.learner = Janitor(self._learn, interval_s=300)  # automatic labels from the group's reactions
@@ -143,6 +144,7 @@ class Regular(Star):
                 self.speaker.on_moment(ev.scope_id, out.moment)  # live replies (send_mode dry|on)
             if out.reasons.get("caption_photos"):
                 gen = self.store.cache_gen  # before the download: a forget meanwhile cancels it
+                self.speaker.captioning.add(ev.msg_id)  # a live turn with this photo waits for it
                 task = asyncio.create_task(self._caption(raw_payload(event), ev.msg_id,
                                                          int(out.reasons["caption_photos"]), gen))
                 self._tasks.add(task)
@@ -188,6 +190,8 @@ class Regular(Star):
                         self.caption_stats.errors[e] = self.caption_stats.errors.get(e, 0) + n
         except Exception:
             logger.exception("[regular] caption error (the photo stays [图片])")
+        finally:
+            self.speaker.captioning.discard(msg_id)
 
     def _status(self) -> dict:
         iso = self._check_isolation()
@@ -286,6 +290,26 @@ class Regular(Star):
             logger.info(f"[regular] send {job.origin} -> {len(job.parts)} part(s): {', '.join(result)}")
         except Exception:
             logger.exception("[regular] send failed")
+
+    def _owners(self) -> list[str]:
+        """Who gets a crisis DM: crisis_dm_to in the plugin config, else AstrBot's admins_id."""
+        ids = [str(x).strip() for x in (self.config.get("crisis_dm_to") or []) if str(x).strip()]
+        if not ids:
+            try:
+                ids = [str(x).strip() for x in (self.context.get_config().get("admins_id") or []) if str(x).strip()]
+            except Exception:
+                ids = []
+        return [i for i in ids if i.isdigit()]
+
+    async def _notify_owner(self, scope_id: str, text: str) -> None:
+        """A private DM to the owner (core/crisis). Raises if nobody could be told."""
+        owners = self._owners()
+        if not owners:
+            raise RuntimeError("no owner configured (crisis_dm_to or AstrBot admins_id)")
+        platform = scope_id.split(":", 1)[0]
+        for uid in owners:
+            await send_private_text(self.context, platform, uid, text)
+        logger.info(f"[regular] crisis DM sent to {len(owners)} owner(s)")
 
     async def _react(self, scope_id: str, msg_id: str, emoji_id: str) -> None:
         """An emoji on a group message (send_mode on only; core/live checks that)."""
