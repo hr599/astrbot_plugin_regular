@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09, after PR #32 merged; #33 in review; #34 (captions) a draft on top of #33.
+Last updated: 2026-11-09 afternoon: #33 merged; #34 (captions) and #35 (format + fit fixes) in review.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -99,18 +99,21 @@ M4 social → M5 learning loop.
 - **M2c part 1, merged (#30, #32).** Compose: draft → voice check → one redraft → send or drop. `/reg bench compose` drafts replies for the moments labeled "reply", with the drafts in a local HTML report.
   - First real run: drafts were short and passed the checks, but 24/30 said "在上课 晚点说". The compose prompt said "in class", and the persona gave that line. Fixed in #32: the hour now shapes *how* he replies, never *whether*.
   - The owner's review of the drafts (Nov 9): the problem is following the thread. Drafts missed sarcasm (praising an idea the group was mocking), answered the last line literally, guessed facts, and said "I've lost track" 4/30 times.
-- **#33, in review: following the thread, and the labels.**
-  - Speakers by nickname; quotes resolved to whom and what (`回复 小王：“…”`).
+- **#33, merged: following the thread, and the labels.**
+  - Speakers by nickname (never a QQ number: `display_name`); quotes resolved to whom and what (`回复 小王：“…”`).
   - Compose reads the room first: it answers `{gist, reply}`, and the gist goes to the local report only.
   - Prompts: messages to someone else are usually between them; don't fill in what the chat didn't say; images are unseen.
-  - Labeling: 8 lines of context, quotes marked, earlier 3s flagged, `/reg label recheck` for old 3s. The 30 reply-labeled moments ran in long streaks within one thread and included messages meant for others, so the labels likely overstate replying.
+  - Labeling: 8 lines of context, quotes marked, earlier 3s flagged, `/reg label recheck` for old 3s. The reply labels likely overstate replying (long streaks in one thread, messages meant for others).
   - Voice: a quote counts as made-up only when attributed or 12+ characters.
+- **First run after #33 (Nov 9 afternoon, old labels; recheck not done yet).**
+  - Compose: the gists show it now reads mockery and jokes correctly (cases 4, 7–9), and there are no brush-offs or repeats. But 19 of 30 first drafts failed the format check: a two-line reply puts a raw line break inside the JSON string. Fixed in #35.
+  - Model: held-out 32% (default cuts) and 45.6% (fitted 5/2). The fitted cuts reply to about half of all labeled moments, and react recall is 0. #35 limits fitted cuts to the labeled reply rate +10 points. The model is still not shown to beat the tuned rules (41%).
 
 ## Next steps (in order)
 
-1. **Owner:** merge #33, then `/reg label recheck` (the old 3s with the fuller view), then rerun `/reg bench compose` (read the 它的理解 lines next to each draft) and `/reg bench model`.
-2. **Image captions: draft #34, waiting on #33.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
-3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels. If it isn't, try richer context before giving up on it.
+1. **Owner:** review/merge #34 (captions; mark it "Ready for review" on GitHub, since REST can't) and #35; `/reg label recheck` (the old 3s with the fuller view); then rerun `/reg bench compose` (read the 它的理解 lines) and `/reg bench model`.
+2. **Image captions: #34, in review.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
+3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
 4. **M2c part 2: live replies.** Live decide (rules + model), wait for the speaker's pause (about 4 s, at most 15), compose, then queue through the outbox under `send_mode`. Start with `dry`. Budget-capped, with a canned in-character line for an @ when over budget.
 5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
 6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
