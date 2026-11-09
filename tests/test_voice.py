@@ -235,3 +235,18 @@ class Issue13Tests(unittest.TestCase):
         for d in ("三点", "五十块", "二十三号"):  # exact values are still checked
             with self.subTest(d=d):
                 self.assertTrue(made_up_specifics(d, ""))
+
+
+class QuoteAttributionTests(unittest.TestCase):
+    """Nov 9 compose run: drafts quoting a term or a question were dropped as made-up quotes."""
+
+    def test_quoted_terms_are_not_quotes(self):
+        for d in ("所以“该不该说话”是个分类问题", "标签是“该不该回”还是“回得合不合适”", "这就是“杠精”吧"):
+            with self.subTest(d=d):
+                self.assertEqual(made_up_specifics(d, context=""), [])
+
+    def test_attributed_or_long_quotes_still_checked(self):
+        for d in ("他说“明天集合”", "老师原话：“这周不上课”", "他说的是“今天我请客”", "“这个项目下个月就开源给大家用了”"):
+            with self.subTest(d=d):
+                self.assertIn("specific_quote", [h.kind for h in made_up_specifics(d, context="")])
+        self.assertEqual(made_up_specifics("他说“这周不上课”", context="老师：这周不上课"), [])

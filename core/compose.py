@@ -30,7 +30,7 @@ from .decide import Msg
 from .decide_model import render_chat, speaker_letters
 from .voice import check
 
-VERSION = "m2c-compose.1"
+VERSION = "m2c-compose.2"
 MAX_TOKENS = 200
 TEMPERATURE = 0.9
 CONTEXT_LINES = 16
@@ -41,6 +41,7 @@ INSTRUCTIONS = """\
 现在轮到你（阿灯）在群里接标了 → 的那条消息。写出你会发的内容：
 - 就像你平时在群里打字：短、口语、可以不完整。一般一两句；想分开发就换行，最多三条。
 - 不列清单，不用"您"，不总结，不说"希望对你有帮助"，不像客服。
+- 别替聊天补没说出来的事：是哪座城市、之前发生过什么、一句话是不是在说你。不确定就问，或者不提。
 - 只用聊天里或你自己生活里有的事实。拿不准的具体数字、时间、价格、原话别编，说个大概或者不说。
 - 既然决定接话，就真的接住话题。别用"在上课""晚点说""等下回"这类话把人推掉，除非有人直接问你在干嘛。
 - 不知道就说不知道，没跟上就说没跟上，这很正常。

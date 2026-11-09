@@ -196,6 +196,12 @@ class FitTests(unittest.TestCase):
         else:
             self.assertEqual(ev["dev"]["balanced_accuracy"], default)
 
+    def test_a_gain_of_exactly_two_points_counts(self):
+        import bench.model_bench as mb
+        self.assertTrue(mb.clears(0.58, 0.56))   # 0.56 + 0.02 = 0.5800000000000001
+        self.assertTrue(mb.clears(0.59, 0.56))
+        self.assertFalse(mb.clears(0.57, 0.56))
+
     def test_fit_ignores_reply_share(self):
         # the model judges only labelled moments, so the replay's reply share is
         # mostly the rules': it must not steer the cuts (first scores run, Nov 9)

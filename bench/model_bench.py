@@ -131,6 +131,12 @@ CUTS = range(1, 11)  # 10 = never
 CUT_MIN_GAIN = 0.02  # fitted cuts replace the defaults only if dev balanced accuracy gains this much
 
 
+def clears(score: float, default: float) -> bool:
+    """At least CUT_MIN_GAIN better than the defaults; a gain of exactly 2 points
+    counts (#32 review: 0.56 + 0.02 is 0.5800000000000001 in floats)."""
+    return score >= default + CUT_MIN_GAIN - 1e-9
+
+
 def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
     """The (react, reply) cuts with the best dev balanced accuracy. Held-out labels
     are never looked at here.
@@ -147,14 +153,14 @@ def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
         return ev["dev"]["balanced_accuracy"] or 0.0
     apply_answers(runs, jobs, answers, dm.DEFAULT_THRESHOLDS)
     default_ev = evaluate(runs)
-    floor = score_of(default_ev) + CUT_MIN_GAIN
+    base = score_of(default_ev)
     best, best_key, best_ev = dm.DEFAULT_THRESHOLDS, None, default_ev
     for a in CUTS:
         for b in CUTS:
             apply_answers(runs, jobs, answers, (a, b))
             ev = evaluate(runs)
             s = score_of(ev)
-            if s < floor:
+            if not clears(s, base):
                 continue
             key = (s, -abs(a - 5) - abs(b - 5))
             if best_key is None or key > best_key:
