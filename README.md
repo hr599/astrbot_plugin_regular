@@ -4,17 +4,22 @@ An [AstrBot](https://github.com/AstrBotDevs/AstrBot) plugin that aims to be a
 humanlike regular in one QQ friends group: it reads along, remembers what
 matters, and speaks when a regular would.
 
-**Status: M1, observe-only.** It logs the configured group, runs its decide stage in
-shadow (recording what it *would* do), and never speaks there.
+**Status: M2 done and live; M3 (memory) dreaming in dry mode.** It talks in the
+configured group when talked to and chimes in by rule (`send_mode on`), reacts with
+emoji, describes photos, and flags crisis moments to the owner. Each night it
+proposes what to remember and writes a local report (`dream_mode dry`); it doesn't
+store memories yet.
+
+New session or new contributor? Start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Milestones
 
 | | What | State |
 |---|---|---|
 | M0 | Skeleton: gate, perceive, store, traces, admin DM commands | done |
-| M1 | Bench: replay on a fake clock, labels, scores, trace viewer; baseline decide in shadow | this branch |
-| M2 | Speaking: decide → compose → voice | |
-| M3 | Memory: claims, episodes, dream pass | |
+| M1 | Bench: replay on a fake clock, labels, scores, trace viewer; baseline decide in shadow | done |
+| M2 | Speaking: decide (rules; a model for unclear moments, bench-only) → compose → voice → send | done, live |
+| M3 | Memory: claims, episodes, dream pass | M3a (dream, dry run) done; M3b–M3d next |
 | M4 | Social: relationships, mood, stickers | |
 | M5 | Learning loop (evidence-gated) | |
 
@@ -27,7 +32,10 @@ core/              framework-free: onebot parsing, gate, perceive, decide, label
 bench/             replay bench: recordings, runner, scoring, HTML trace viewer, synthetic fixtures
 services/          SQLite store (schema.sql), raw dumps, redacted debug bundles
 tests/             stdlib unittest, no AstrBot needed
-docs/SETUP.md      AstrBot settings, LLBot, live-account checklist
+harness/           persona, decide rule numbers, voice tells, model prices
+offline/           dream pass: the model half, the verifier, /reg dream, the synthetic dream bench
+docs/SETUP.md      AstrBot settings, LLBot, live-account checklist, every /reg command
+docs/HANDOFF.md    where things stand, how work is done here, what's next
 ```
 
 ## Safety defaults
