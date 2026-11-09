@@ -451,6 +451,11 @@ the alt account clear of QQ's risk controls). `/reg send reset [group]` clears
 the current hour's count, for when the group is in a chatty mood; a restart
 within the hour won't count the old messages again.
 
+**Laughs at the end of a line.** He ends at most one line in five with a laugh
+("hhh", "哈哈哈", "233"); later ones are trimmed before sending (no extra model
+call), and the trace says `trimmed: laugh ending`. A reply that is only a laugh
+stays as it is.
+
 ## Crisis moments
 
 When a message sounds like someone may want to hurt themselves (不想活, 撑不下去…,

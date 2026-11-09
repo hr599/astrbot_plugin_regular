@@ -34,6 +34,7 @@ from .decide_rules import decide_m2, rhythm_state
 from . import crisis
 from .moments import stored_moments
 from .signals import compute as signals
+from .voice import trim_laughs
 from . import reactions as rx
 
 log = logging.getLogger("astrbot")  # AstrBot's own logger name, so failures show up in its log
@@ -270,7 +271,10 @@ class Speaker:
         if c.error:
             info["error"] = c.error
         if c.outcome == "send":
-            text = "\n".join(c.parts)
+            parts, trimmed = trim_laughs(c.parts, self._own_recent(scope_id))
+            if trimmed:
+                info["trimmed"] = "laugh ending"
+            text = "\n".join(parts)
         elif c.outcome == "over_budget" and direct:
             text = self.rng.choice(CANNED)
             info["canned"] = True
@@ -351,6 +355,13 @@ class Speaker:
         self._trace(scope_id, m.msg_id, "react", info)
 
     # ------------------------------------------------------------ helpers
+    def _own_recent(self, scope_id: str, n: int = 4) -> list[str]:
+        """His last few lines in this group (own messages have no person id)."""
+        rows = self.p.store.db.execute(
+            "SELECT text FROM messages WHERE scope_id=? AND is_bot=1 AND person_id IS NULL AND recalled=0"
+            " ORDER BY ts DESC, rowid DESC LIMIT ?", (scope_id, n)).fetchall()
+        return [r[0] for r in rows][::-1]
+
     def _group_p90(self, scope_id: str) -> int | None:
         now = self.clock()
         hit = self._p90.get(scope_id)
