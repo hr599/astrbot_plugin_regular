@@ -128,16 +128,35 @@ def apply_answers(runs, jobs, answers, thresholds=dm.DEFAULT_THRESHOLDS) -> int:
 CUTS = range(1, 11)  # 10 = never
 
 
+CUT_MIN_GAIN = 0.02  # fitted cuts replace the defaults only if dev balanced accuracy gains this much
+
+
 def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
-    """The (react, reply) cuts that score best on dev labels (tune's objective:
-    balanced accuracy, reply share near your labels' implied rate). Held-out labels
-    are never looked at here. Ties go to the cuts closest to the defaults."""
-    best, best_key, best_ev = dm.DEFAULT_THRESHOLDS, None, None
+    """The (react, reply) cuts with the best dev balanced accuracy. Held-out labels
+    are never looked at here.
+
+    No reply-share term (unlike /reg bench tune): the model only judges labelled
+    moments, so the replay's reply share is almost all the rules' and barely moves
+    with the cuts; penalising it pushed the reply cut down to 2 and lost every
+    reaction (first scores run, Nov 9). With about 170 dev labels the search
+    overfits easily, so the defaults stay unless beaten by CUT_MIN_GAIN; ties go to
+    the cuts closest to the defaults."""
+    def score_of(ev):
+        if ev["explicit_missed"] or ev["bot_loop_breaks"]:
+            return -1.0
+        return ev["dev"]["balanced_accuracy"] or 0.0
+    apply_answers(runs, jobs, answers, dm.DEFAULT_THRESHOLDS)
+    default_ev = evaluate(runs)
+    floor = score_of(default_ev) + CUT_MIN_GAIN
+    best, best_key, best_ev = dm.DEFAULT_THRESHOLDS, None, default_ev
     for a in CUTS:
         for b in CUTS:
             apply_answers(runs, jobs, answers, (a, b))
             ev = evaluate(runs)
-            key = (objective(ev), -abs(a - 5) - abs(b - 5))
+            s = score_of(ev)
+            if s < floor:
+                continue
+            key = (s, -abs(a - 5) - abs(b - 5))
             if best_key is None or key > best_key:
                 best, best_key, best_ev = (a, b), key, ev
     return best, best_ev
@@ -211,9 +230,11 @@ async def model_bench(recs: list[Recording], data_dir: Path, *, client, persona_
         lines.append(f"  {name} {r['labeled']} 条：只用规则 {_pct(r['balanced_accuracy'])}（{rec(r)}）· "
                      f"模型默认分界 {_pct(m['balanced_accuracy'])}（{rec(m)}）· "
                      f"按调参标注定分界 {_pct(f['balanced_accuracy'])}（{rec(f)}）")
-    lines.append(f"分界：表情 ≥{cuts[0]}，回复 ≥{cuts[1]}（10 = 从不；只用调参那部分标注定，留出的没参与）")
+    lines.append(f"分界：表情 ≥{cuts[0]}，回复 ≥{cuts[1]}（10 = 从不；只用调参那部分标注定，留出的没参与；"
+                 f"只有比默认 5/5 高出 {CUT_MIN_GAIN:.0%} 以上才换）")
     lines.append(f"回复占比 规则 {_pct(rules['reply_share'])} · 默认 {_pct(model['reply_share'])} · "
-                 f"定分界后 {_pct(fitted['reply_share'])}（按标注推算约 {_pct(fitted['target_reply_share'])}）")
+                 f"定分界后 {_pct(fitted['reply_share'])}（按标注推算约 {_pct(fitted['target_reply_share'])}；"
+                 "模型只判断了已标注的时刻，其余仍是规则，所以这个占比参考意义有限）")
     if limit and total > len(jobs):
         lines.append(f"只问了前 {len(jobs)} 条；不加数字的 /reg bench model 会问全部（已问过的走缓存，不再花钱）。")
     lines.append("模型本身没用你的标注调过；分界只用调参那部分标注定，所以留出那行是公平的测试。只影响 bench，影子决策还是规则。")

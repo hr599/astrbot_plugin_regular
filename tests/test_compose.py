@@ -150,6 +150,24 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(len(seen), 1)
         self.assertEqual(store.db.execute("SELECT COUNT(*) FROM llm_cache").fetchone()[0], 0)
 
+    def test_class_time_means_short_not_a_brush_off(self):
+        # first compose run (Nov 9): the prompt said 在上课, the persona gives 在上课 晚点说
+        # as his class-time line, and 24 of 30 drafts deferred
+        noon = E - 7 * 3600  # 14:00 UTC+8
+        p = cm.build_prompt(self.m, self.ctx, noon, "class")
+        self.assertNotIn("在上课", p)
+        self.assertIn("简短", p)
+        self.assertIn("别用", cm.INSTRUCTIONS)
+        self.assertIn("晚点说", cm.INSTRUCTIONS)
+        for t in ("在上课 晚点说", "等下回你", "晚点看", "回头聊"):
+            with self.subTest(t=t):
+                self.assertTrue(cm.defers(t))
+        for t in ("烤冷面吧", "我上课的时候也这样", "晚上吃啥"):
+            with self.subTest(t=t):
+                self.assertFalse(cm.defers(t))
+        core = Path("harness/persona/core.md").read_text(encoding="utf-8")
+        self.assertIn("不是每次都这样", core)
+
     def test_length_follows_the_group(self):
         long = "我觉得吧这个事情其实挺复杂的因为大家口味都不一样所以最好还是投票决定比较公平你们觉得呢"
         out, _ = self.run_c([long, "投票吧"], group_p90_len=12)
@@ -191,6 +209,13 @@ class ComposeBenchTests(unittest.TestCase):
         html = next((self.d / "bench" / "runs").glob("compose-*.html")).read_text(encoding="utf-8")
         self.assertIn("我也想吃", html)
         self.assertIn("没有往群里发任何东西", out)
+
+    def test_brush_offs_and_repeats_are_counted(self):
+        out, *_ = self.bench(lambda p: "在上课 晚点说", n=6)
+        last = json.loads((self.d / "bench" / "compose-last.json").read_text(encoding="utf-8"))
+        self.assertEqual(last["deferrals"], 6)
+        self.assertEqual(last["repeats"], 5)
+        self.assertIn("推掉别人的", out)
 
     def test_rerun_is_cached(self):
         _, c, store, seen = self.bench(lambda p: "行")
