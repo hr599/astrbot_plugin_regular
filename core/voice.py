@@ -358,7 +358,9 @@ def delays(parts: list[str], rng: random.Random | None = None) -> list[float]:
 
 # ---------------------------------------------------------------- the stage
 # a laugh tacked on the end of a line: "…吧 hhh", "…了哈哈哈", "…233"
-LAUGH_END = re.compile(r"[\s，,~～]*(?:h{2,}|哈{2,}|嘿嘿+|嘻嘻+|233+)[\s~～!！.。]*$", re.I)
+# "hhh" and "233" only on their own: never the tail of a word or a number ("1233",
+# "ahh"), PR #41 review
+LAUGH_END = re.compile(r"[\s，,~～]*(?:(?<![a-z0-9])h{2,}|哈{2,}|嘿嘿+|嘻嘻+|(?<![a-z0-9])233+)[\s~～!！.。]*$", re.I)
 
 
 def trim_laughs(parts: list[str], recent_own: list[str], window: int = 4) -> tuple[list[str], bool]:

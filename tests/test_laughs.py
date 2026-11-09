@@ -23,6 +23,12 @@ class TrimTests(unittest.TestCase):
         self.assertEqual(trim_laughs(["真的假的", "hhh"], ["好 hhh"]), (["真的假的"], True))
         self.assertEqual(trim_laughs(["哈哈哈哈哈"], ["好 hhh"]), (["哈哈哈哈哈"], False))
 
+    def test_numbers_and_words_ending_like_a_laugh_stay(self):
+        """PR #41 review: "房间号是1233" went out as "房间号是1"."""
+        for draft in ("房间号是1233", "ddl是2233号", "房间号是1233 ", "Ahh", "github用户名是xhh", "密码是A233"):
+            with self.subTest(draft=draft):
+                self.assertEqual(trim_laughs([draft], ["我在 hhh"]), ([draft], False))
+
     def test_only_the_last_few_lines_count(self):
         self.assertFalse(trim_laughs(["好 hhh"], ["a hhh", "b", "c", "d", "e"])[1])
 
@@ -43,6 +49,19 @@ class LiveTests(unittest.TestCase):
         self.assertEqual(sent, ["我也没写完 hhh", "那你先睡", "明天见"])
         self.assertEqual([i.get("trimmed") for d, i in w.traces() if d == "reply"],
                          [None, "laugh ending", "laugh ending"])
+
+    def test_a_number_ending_in_233_is_sent_whole(self):
+        from tests.test_live import at_bot
+
+        async def go():
+            w = Live(["我在 hhh", "房间号是1233"])
+            for i, t in enumerate(["在吗", "房间号是1233，帮我复述一下"]):
+                w.now = E + 600 * i
+                w.post(1 + i, at_bot(t), dt=600 * i)
+                await w.settle()
+            return w
+        w = asyncio.run(go())
+        self.assertEqual(["".join(j.parts) for j in w.sent], ["我在 hhh", "房间号是1233"])
 
 
 if __name__ == "__main__":
