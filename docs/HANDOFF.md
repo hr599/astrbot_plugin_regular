@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 afternoon: #34 (captions) and #35 merged; #36 (live replies + automatic labels, review fixes in) and #37 (reactions, draft on #36) in review.
+Last updated: 2026-11-09 afternoon: everything through #37 merged (live replies, automatic labels, captions, reactions). 阿灯 can talk once `send_mode` is on.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -28,7 +28,7 @@ chip in, and always answer when someone talks to it directly.
   - If a suggested change isn't necessary, say so; the owner asked for that.
   - Merge bar: the main functions work and there's no substantive problem. Small confirmed edge cases can become follow-up issues.
 - **GitHub from a Claude session.** GraphQL was blocked in past sessions, so PRs and comments went through the REST API (`gh api repos/.../pulls`), not `gh pr create`.
-- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (361 passing with #33).
+- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (414 passing at #37).
 - **`core/` has no astrbot imports.** Everything AstrBot-specific lives in `adapter/` and `main.py`, so the whole pipeline is testable without AstrBot.
 
 ## Hard rules (security and privacy)
@@ -109,15 +109,15 @@ M4 social → M5 learning loop.
   - Compose: the gists show it now reads mockery and jokes correctly (cases 4, 7–9), and there are no brush-offs or repeats. But 19 of 30 first drafts failed the format check: a two-line reply puts a raw line break inside the JSON string. Fixed in #35.
   - Model: held-out 32% (default cuts) and 45.6% (fitted 5/2). The fitted cuts reply to about half of all labeled moments, and react recall is 0. #35 limits fitted cuts to the labeled reply rate +10 points. The model is still not shown to beat the tuned rules (41%).
 
-- **#36, in review: live replies and learning from the group.** The owner's calls (Nov 9): he's doing well enough, go live straight into the group; answer when talked to, plus rule-based chime-ins; learn when to jump in fully automatically (no rating DMs).
+- **#36, merged: live replies and learning from the group.** The owner's calls (Nov 9): he's doing well enough, go live straight into the group; answer when talked to, plus rule-based chime-ins; learn when to jump in fully automatically (no rating DMs).
   - `core/live.py`: pause (4 s / max 15) → decide the merged turn (M2 rules) → compose → outbox → deliver under a per-group lock. One retry on an @'s model error; a canned line over budget. Nothing happens unless `send_mode` is `on` (or `dry`).
   - `core/feedback.py`, every 5 min: after a chime-in, engaged → reply, ignored or pushed back → quiet; an unanswered group question → reply. Schema v6 `auto_labels`; dev side only, never held out, never in the implied rate; hand labels win.
-  - **#37 (draft on #36): emoji reactions.** No model call: the emoji comes from the message's cue (`harness/rules/reactions.json`), and half the time from the group's own favourites once it has reacted enough. 20 per group per hour; `set_msg_emoji_like` in `adapter/actions.py`. **To check live:** that LLBot accepts the action and the ids show the expected faces.
+  - **#37, merged: emoji reactions.** No model call: the emoji comes from the message's cue (`harness/rules/reactions.json`), and half the time from the group's own favourites once it has reacted enough. 20 per group per hour; never into a paused group; `set_msg_emoji_like` in `adapter/actions.py`. **To check live:** that LLBot accepts the action and the ids show the expected faces.
   - Not yet: the crisis DM to the owner, waiting for a photo's caption. **After #34 and #36 both merge:** `core/decide.py: merged_msg` must also merge `captions` (left out because #34 adds the field).
 
 ## Next steps (in order)
 
-1. **Owner:** review/merge #36, then #37 (mark it "Ready for review" after #36); then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Watch `/reg status` (`mode`, `captions`, `learning`). `/reg label recheck` when there's time.
+1. **Owner:** update the plugin, then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Check live: captions (`/reg status` → `captions`), that a reaction shows the expected face, and the first replies. Watch `mode`, `captions`, `learning`. `/reg label recheck` when there's time.
 2. **Image captions: #34, merged.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
 4. **To finish M2** (owner, Nov 9: the bake-off is dropped): the crisis DM to the owner with a sincerity check, and live replies waiting for a photo's caption. Reactions are in #37.
