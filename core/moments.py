@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from .captions import shown
+from .captions import by_position
 from .decide import Msg, display_name
 
 
@@ -27,7 +27,7 @@ def stored_moments(store, scope_id: str, since_ts: int = 0, until_ts: int | None
     caps = store.captions_for(m.msg_id for m in msgs) if hasattr(store, "captions_for") else {}
     for m in msgs:
         if m.msg_id in caps:
-            m.captions = [shown(c, o) for c, o in caps[m.msg_id]]
+            m.captions = by_position(caps[m.msg_id])
     msgs += _pokes(store, scope_id, since_ts, until_ts, bot_uids)
     msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))
     return msgs

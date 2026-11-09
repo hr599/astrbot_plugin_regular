@@ -63,13 +63,18 @@ def _clip(t: str) -> str:
     return t if len(t) <= LINE_MAX else t[:LINE_MAX] + "…"
 
 
-def with_captions(text: str, captions: list[str]) -> str:
-    """[图片] -> [图片：一碗烤冷面…], in order, for the photos that have a caption."""
-    for c in captions or []:
-        if "[图片]" not in text:
-            break
-        text = text.replace("[图片]", f"[图片：{c}]", 1)
-    return text
+def with_captions(text: str, captions: list) -> str:
+    """The i-th [图片] -> [图片：caption i]; a photo without a caption (None) stays
+    [图片], so a later caption never lands on an earlier photo (PR #34 review)."""
+    if not captions:
+        return text
+    parts = text.split("[图片]")
+    out = [parts[0]]
+    for i, rest in enumerate(parts[1:]):
+        c = captions[i] if i < len(captions) else None
+        out.append(f"[图片：{c}]" if c else "[图片]")
+        out.append(rest)
+    return "".join(out)
 
 
 NAME_MAX = 16

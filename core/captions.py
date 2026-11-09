@@ -92,6 +92,17 @@ def shown(caption: str, ocr: str) -> str:
     return caption + (f"；图里的字：{ocr}" if ocr else "")
 
 
+def by_position(rows: list[tuple[int, str, str]] | None) -> list[str | None]:
+    """[(position, caption, ocr)] -> one entry per photo up to the last described one;
+    None where a photo has no caption (it stays [图片])."""
+    if not rows:
+        return []
+    out: list[str | None] = [None] * (max(p for p, _, _ in rows) + 1)
+    for p, c, o in rows:
+        out[p] = shown(c, o)
+    return out
+
+
 @dataclass
 class Result:
     described: int = 0  # new captions from the model
@@ -104,14 +115,21 @@ class Result:
 
 
 async def describe(client, store, msg_id: str, images: list[tuple[int, bytes]], *,
-                   now: int | None = None) -> Result:
-    """Caption the photos of one stored message. images: (position, bytes)."""
+                   now: int | None = None, gen: int | None = None) -> Result:
+    """Caption the photos of one stored message. images: (position, bytes).
+    gen: the store's forget generation when the message arrived (main.py takes it
+    before downloading). Before every model request the message must still be
+    there, not recalled, and nobody forgotten since: a photo that may no longer be
+    kept is never sent out (PR #34 review), not just never written back."""
     now = int(time.time()) if now is None else now
-    gen = getattr(store, "cache_gen", 0)
+    gen = getattr(store, "cache_gen", 0) if gen is None else gen
     out = Result()
     for pos, data in images:
         if getattr(store, "cache_gen", 0) != gen:
             out.forgotten += 1
+            continue
+        if not store.message_live(msg_id):
+            out.forgotten += 1  # recalled or gone (retention) since it arrived
             continue
         mime = mime_of(data)
         if mime is None or len(data) > MAX_BYTES:

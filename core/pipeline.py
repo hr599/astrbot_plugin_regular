@@ -15,7 +15,7 @@ from typing import Any, Callable
 
 from . import limits
 from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, display_name, name_addressed
-from .captions import shown
+from .captions import by_position
 from .decide_rules import POLICY as M2_POLICY, decide_m2
 from .limits import LimitState
 from .moments import stored_moments
@@ -70,7 +70,7 @@ class Pipeline:
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
                 name=display_name(r["sender_name"], self.store.uid_of(r["person_id"])),
-                captions=[shown(c, o) for c, o in caps.get(r["msg_id"], [])],
+                captions=by_position(caps.get(r["msg_id"])),
             ))
         return out
 

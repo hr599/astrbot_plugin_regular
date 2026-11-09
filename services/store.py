@@ -415,19 +415,26 @@ class Store:
             self.db.execute("UPDATE media SET n_seen=n_seen+1, last_seen=? WHERE media_key=?", (now, media_key))
         return bool(cur.rowcount)
 
-    def captions_for(self, msg_ids) -> dict[str, list[tuple[str, str]]]:
-        """msg_id -> [(caption, ocr), ...] in image order, for messages that have any."""
+    def captions_for(self, msg_ids) -> dict[str, list[tuple[int, str, str]]]:
+        """msg_id -> [(position, caption, ocr), ...] for messages that have any. The
+        position is the photo's index among the message's photos: a photo without a
+        caption leaves a gap, never shifts the next one onto it (PR #34 review)."""
         ids = list(msg_ids)
-        out: dict[str, list[tuple[str, str]]] = {}
+        out: dict[str, list[tuple[int, str, str]]] = {}
         for i in range(0, len(ids), 500):
             chunk = ids[i:i + 500]
             q = ",".join("?" * len(chunk))
             for r in self.db.execute(
-                    f"""SELECT mm.msg_id, md.caption, md.ocr_text FROM message_media mm JOIN media md USING (media_key)
+                    f"""SELECT mm.msg_id, mm.position, md.caption, md.ocr_text
+                        FROM message_media mm JOIN media md USING (media_key)
                         WHERE mm.msg_id IN ({q}) AND md.caption IS NOT NULL ORDER BY mm.msg_id, mm.position""",
                     chunk):
-                out.setdefault(r["msg_id"], []).append((r["caption"], r["ocr_text"] or ""))
+                out.setdefault(r["msg_id"], []).append((int(r["position"]), r["caption"], r["ocr_text"] or ""))
         return out
+
+    def message_live(self, msg_id: str) -> bool:
+        """Still stored and not recalled (forget and retention delete the row)."""
+        return bool(self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone())
 
     def purge_orphan_media(self) -> int:
         """Captions no stored message points to any more (recalled, forgotten, past

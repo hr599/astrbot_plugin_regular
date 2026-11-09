@@ -130,8 +130,9 @@ class Regular(Star):
             if out.action != "drop" or out.reasons.get("gate") == "own_message":
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
             if out.reasons.get("caption_photos"):
+                gen = self.store.cache_gen  # before the download: a forget meanwhile cancels it
                 task = asyncio.create_task(self._caption(raw_payload(event), ev.msg_id,
-                                                         int(out.reasons["caption_photos"])))
+                                                         int(out.reasons["caption_photos"]), gen))
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
             if isinstance(out.admin_reply, AsyncReply):
@@ -159,11 +160,13 @@ class Regular(Star):
             logger.warning(f"[regular] isolation check failed: {rep.get('error')}")
         return rep
 
-    async def _caption(self, raw, msg_id: str, expected: int) -> None:
-        """Describe a stored message's photos (core/captions). Bytes stay in memory."""
+    async def _caption(self, raw, msg_id: str, expected: int, gen: int) -> None:
+        """Describe a stored message's photos (core/captions). Bytes stay in memory.
+        gen was taken when the message arrived: describe() checks it, and that the
+        message is still there, before every model request."""
         try:
             photos = await fetch_photos(raw)
-            r = await cap.describe(self.models, self.store, msg_id, photos)
+            r = await cap.describe(self.models, self.store, msg_id, photos, gen=gen)
             r.skipped += max(0, expected - len(photos))  # no QQ link, too big, or not reachable
             for k, v in r.__dict__.items():
                 if isinstance(v, int):

@@ -80,7 +80,7 @@ class CaptionTests(unittest.TestCase):
         r2 = asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:2", [(0, PNG)], now=E))
         self.assertEqual((r2.reused, len(w.calls)), (1, 1))  # same image: no second call
         caps = w.store.captions_for([f"{SCOPE}:1", f"{SCOPE}:2"])
-        self.assertEqual(caps[f"{SCOPE}:1"], [("一碗烤冷面，上面撒了葱花", "")])
+        self.assertEqual(caps[f"{SCOPE}:1"], [(0, "一碗烤冷面，上面撒了葱花", "")])
         # nothing but text and a hash is kept
         rows = w.store.db.execute("SELECT * FROM media").fetchall()
         self.assertEqual(len(rows), 1)
@@ -175,6 +175,72 @@ class CaptionTests(unittest.TestCase):
         user = seen["messages"][-1]["content"]
         self.assertEqual(user[0], {"type": "text", "text": "描述这张图。"})
         self.assertEqual(user[1]["image_url"]["url"], "data:image/png;base64,QUJD")
+
+
+class Review34Tests(unittest.TestCase):
+    """PR #34 review findings."""
+
+    def test_forget_or_recall_while_downloading_sends_nothing(self):
+        for how in ("forget", "recall"):
+            with self.subTest(how=how):
+                w = World()
+                w.post(1, [photo()], uid="20002")
+                gen = w.store.cache_gen  # taken when the message arrived, before the download
+                if how == "forget":  # ...which finishes after this
+                    w.store.forget_person("aiocqhttp", "20002", stop=True)
+                else:
+                    w.store.recall(f"{SCOPE}:1")
+                r = asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:1", [(0, PNG)], now=E, gen=gen))
+                self.assertEqual(len(w.calls), 0)  # the photo never went out
+                self.assertEqual(r.forgotten, 1)
+
+    def test_recall_during_the_first_photo_stops_the_second(self):
+        w = World()
+        w.post(1, [photo(), photo()])
+
+        def recall_then_answer(params):
+            w.store.recall(f"{SCOPE}:1")
+            return '{"caption": "一只猫", "text": ""}'
+        w.answer = recall_then_answer
+        asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:1", [(0, PNG), (1, PNG2)], now=E))
+        self.assertEqual(len(w.calls), 1)
+        self.assertEqual(w.store.db.execute("SELECT COUNT(*) FROM media").fetchone()[0], 0)
+
+    def test_a_caption_stays_on_its_own_photo(self):
+        w = World()
+        w.post(1, [{"type": "text", "data": {"text": "我的是"}}, photo(),
+                   {"type": "text", "data": {"text": "，朋友的是"}}, photo()], name="小王")
+        w.post(2, "好看", uid="30003", name="小李")
+        w.answer = '{"caption": "一只橘猫", "text": ""}'
+        asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:1", [(1, PNG2)], now=E))  # the first failed
+        ms = stored_moments(w.store, SCOPE)
+        self.assertEqual(ms[0].captions, [None, "一只橘猫"])
+        p = build_prompt(ms[1], ms[:1], E + 2)
+        self.assertIn("小王：我的是[图片]，朋友的是[图片：一只橘猫]", p)
+        lab = Labeler(w.store)
+        rows = [w.store.db.execute("SELECT m.*, '小李' AS sender_name FROM messages m WHERE msg_id=?",
+                                   (f"{SCOPE}:2",)).fetchone()]
+        self.assertIn("我的是[图片]，朋友的是[图片：一只橘猫]", "\n".join(lab._blocks(rows, False)))
+
+    def test_photo_then_a_line_about_it_keeps_the_caption(self):
+        from bench.compose_bench import targets
+        from bench.situations import Recording, from_store
+        from core.compose import build_prompt as compose_prompt
+        w = World()
+        w.post(1, "刚下课", uid="30003", name="小李", ts=E)
+        w.post(2, [photo()], name="小王", ts=E + 10)
+        w.post(3, "这个看起来怎么样", name="小王", ts=E + 12)
+        asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:2", [(0, PNG)], now=E))
+        rec = from_store(w.store, SCOPE)
+        rec = Recording(rec.name, "saved", rec.messages, {f"{SCOPE}:3": {"addressed": False, "should": "reply"}})
+        m, ctx, now = targets([rec])[0]
+        self.assertEqual(m.captions, ["一碗烤冷面，上面撒了葱花"])
+        self.assertIn("→ 小王：[图片：一碗烤冷面，上面撒了葱花]", compose_prompt(m, ctx, now))
+        from bench.runner import merged_captions
+        a = Msg("a", E, "p", "[图片][图片]", captions=[None, "猫"])
+        b = Msg("b", E + 1, "p", "还有[图片]", captions=["狗"])
+        self.assertEqual(merged_captions([a, b]), [None, "猫", "狗"])
+        self.assertEqual(merged_captions([Msg("c", E, "p", "[图片]"), Msg("d", E, "p", "嗯")]), [])
 
 
 class FetchAndPipelineTests(unittest.TestCase):

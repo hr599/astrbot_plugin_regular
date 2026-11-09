@@ -20,7 +20,7 @@ import json
 import random
 import time
 
-from .captions import shown
+from .captions import by_position
 from .decide_model import with_captions
 from .decide import DEFAULT_ALIASES, name_addressed
 
@@ -137,7 +137,7 @@ class Labeler:
         something (first compose drafts, Nov 9: runs of 3s in one thread)."""
         text = "[已撤回]" if r["recalled"] else r["text"]
         if caps and r["msg_id"] in caps:
-            text = with_captions(text, [shown(c, o) for c, o in caps[r["msg_id"]]])
+            text = with_captions(text, by_position(caps[r["msg_id"]]))
         to = ""
         if r["reply_to"]:
             to = f"（回复 {self.store.sender_name_of(r['reply_to']) or '别人'}）"
