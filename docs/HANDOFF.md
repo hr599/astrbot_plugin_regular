@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 afternoon: everything through #37 merged (live replies, automatic labels, captions, reactions). 阿灯 can talk once `send_mode` is on.
+Last updated: 2026-11-09 afternoon: everything through #37 merged; 阿灯 going live. #38 (crisis check + owner DM, caption wait) in review: the last M2 piece.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -113,14 +113,14 @@ M4 social → M5 learning loop.
   - `core/live.py`: pause (4 s / max 15) → decide the merged turn (M2 rules) → compose → outbox → deliver under a per-group lock. One retry on an @'s model error; a canned line over budget. Nothing happens unless `send_mode` is `on` (or `dry`).
   - `core/feedback.py`, every 5 min: after a chime-in, engaged → reply, ignored or pushed back → quiet; an unanswered group question → reply. Schema v6 `auto_labels`; dev side only, never held out, never in the implied rate; hand labels win.
   - **#37, merged: emoji reactions.** No model call: the emoji comes from the message's cue (`harness/rules/reactions.json`), and half the time from the group's own favourites once it has reacted enough. 20 per group per hour; never into a paused group; `set_msg_emoji_like` in `adapter/actions.py`. **To check live:** that LLBot accepts the action and the ids show the expected faces.
-  - Not yet: the crisis DM to the owner, waiting for a photo's caption. **After #34 and #36 both merge:** `core/decide.py: merged_msg` must also merge `captions` (left out because #34 adds the field).
+  - The crisis DM and the caption wait are in #38. **After #34 and #36 both merge:** `core/decide.py: merged_msg` must also merge `captions` (left out because #34 adds the field).
 
 ## Next steps (in order)
 
 1. **Owner:** update the plugin, then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Check live: captions (`/reg status` → `captions`), that a reaction shows the expected face, and the first replies. Watch `mode`, `captions`, `learning`. `/reg label recheck` when there's time.
 2. **Image captions: #34, merged.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
-4. **To finish M2** (owner, Nov 9: the bake-off is dropped): the crisis DM to the owner with a sincerity check, and live replies waiting for a photo's caption. Reactions are in #37.
+4. **To finish M2: #38, in review.** Crisis: a sincerity check by the decide model; sincere (or can't tell) → caring reply + a private DM to the owner (`crisis_dm_to`, else `admins_id`), once per person per day; not sincere → ordinary message. Live turns wait up to 6 s for a photo caption in progress. With #38 merged, M2 is done (the bake-off was dropped; the blind test is optional). **To check live:** the private DM arrives.
 5. **After going live:** a numbers-only check of the first days (replies and reactions per day, engaged vs ignored, missed questions, cost), then retune with the automatic labels.
 5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
 6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
