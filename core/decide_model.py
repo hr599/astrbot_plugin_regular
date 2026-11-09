@@ -68,6 +68,8 @@ QUOTE_SNIPPET = 20
 
 def _clean_name(n: str) -> str:
     n = re.sub(r"\s+", " ", n or "").strip().replace("<", "‹").replace(">", "›")
+    if re.fullmatch(r"\d{5,12}", n):
+        return ""  # a QQ-number fallback that slipped through (old saved recordings): a letter instead
     return n[:NAME_MAX]
 
 
