@@ -103,6 +103,19 @@ def bench_command(store, data_dir: Path, args: list[str], *,
             except Exception as e:  # noqa: BLE001 - surface it to the admin
                 return f"bench compose 出错：{type(e).__name__}: {e}"
         return AsyncReply(run_compose, placeholder="正在写回复草稿…")
+    if args and args[0].lower() == "dream":
+        from ._core import AsyncReply
+        try:
+            from ..offline.dream_bench import dream_bench
+        except ImportError:  # repo root
+            from offline.dream_bench import dream_bench
+
+        async def run_dream() -> str:
+            try:
+                return await dream_bench(data_dir, models, persona.core if persona is not None else "")
+            except Exception as e:  # noqa: BLE001 - surface it to the admin
+                return f"bench dream 出错：{type(e).__name__}: {e}"
+        return AsyncReply(run_dream, placeholder="正在用合成群试整理记忆…")
     if tuning:
         from .tune import tune_command
         return tune_command([r for r in recs if r.messages], data_dir, args[1:], aliases=aliases,
@@ -133,8 +146,10 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     model = json.loads(model_last.read_text(encoding="utf-8")) if model_last.exists() else None
     compose_last = data_dir / "bench" / "compose-last.json"
     compose = json.loads(compose_last.read_text(encoding="utf-8")) if compose_last.exists() else None
-    if not runs:  # a /reg bench model or compose run alone still shows up
-        return {"model": model, "compose": compose} if model or compose else None
+    dream_last = data_dir / "bench" / "dream-last.json"  # numbers and fixture ids only
+    dream = json.loads(dream_last.read_text(encoding="utf-8")) if dream_last.exists() else None
+    if not runs:  # a /reg bench model, compose or dream run alone still shows up
+        return {"model": model, "compose": compose, "dream": dream} if model or compose or dream else None
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "labeled_auto", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
@@ -143,6 +158,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     return {
         "model": model,
         "compose": compose,
+        "dream": dream,
         "file": runs[-1].name,
         "totals": d["totals"],
         "runs": [{"source": r["source"],

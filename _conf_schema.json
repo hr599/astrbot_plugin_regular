@@ -74,6 +74,22 @@
     "default": [],
     "hint": "群里有人看起来真心想伤害自己时，阿灯会在群里认真回一句，并私信提醒这里的人（同一个人一天最多一次）。不填就用 AstrBot 的管理员（admins_id）。只在发送模式为 dry 或 on 时生效。"
   },
+  "dream_mode": {
+    "description": "整理记忆（M3）",
+    "type": "string",
+    "default": "off",
+    "options": [
+      "off",
+      "dry"
+    ],
+    "hint": "off = 不整理；dry = 每晚 04:30 读当天聊天、提出记忆、只写本机报告，不改记忆。会把聊天发给 provider_dream 的模型（OpenAI），先征得群友同意。也可以私聊 /reg dream off|dry。"
+  },
+  "dream_budget_usd": {
+    "description": "整理记忆每晚最多花多少美元",
+    "type": "float",
+    "default": 0.4,
+    "hint": "从 OpenAI 的月预算里出。超过就停，剩下的下一晚再整理。"
+  },
   "provider_decide": {
     "description": "模型：判断要不要说话（deepseek-flash）",
     "type": "string",
@@ -93,10 +109,10 @@
     "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
   },
   "provider_dream": {
-    "description": "模型：夜里整理记忆（deepseek-v4-pro）",
+    "description": "模型：夜里整理记忆（gpt-6.1-sol）",
     "type": "string",
     "default": "",
-    "hint": "填 AstrBot 里提供商的 ID（API key 只放在 AstrBot 的提供商设置里）。留空 = 这个角色不调用模型。"
+    "hint": "填 AstrBot 里提供商的 ID，这个提供商的模型要设成 gpt-6.1-sol（和评审用的 gpt-6.1-terra 分开建一个）。API key 只放在 AstrBot 的提供商设置里。"
   },
   "provider_judge": {
     "description": "模型：bench 评分，只离线用（gpt-6.1-terra）",

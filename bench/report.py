@@ -160,8 +160,24 @@ def forget_reports(folder: Path) -> int:
     Returns reports deleted."""
     n = 0
     if folder.exists():
-        for pat in ("bench-*.html", "compose-*.html"):  # compose drafts quote the chat too
+        for pat in ("bench-*.html", "compose-*.html", "dream-*.html"):  # drafts and dream reports quote it too
             for p in folder.glob(pat):
                 p.unlink(missing_ok=True)
                 n += 1
+    return n
+
+
+def prune_reports(folder: Path, days: int = 30) -> int:
+    """Delete HTML reports older than `days` (dream reports, M3a). Returns deleted."""
+    import time as _time
+    n = 0
+    if folder.exists():
+        cutoff = _time.time() - days * 86400
+        for p in folder.glob("*.html"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    n += 1
+            except OSError:
+                pass
     return n

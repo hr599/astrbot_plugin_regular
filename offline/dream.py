@@ -54,7 +54,7 @@ _ALLOWED_PREFERENCE = re.compile(r"(希望|想|喜欢|要求)(以后)?(被)(叫|
 # sensitive topics: never stored as a fact about someone (only as a boundary)
 _SENSITIVE = re.compile(
     r"(病|癌|抑郁|焦虑症|精神|药|怀孕|流产|性取向|同性恋|gay|les|出柜|宗教|信(教|佛|主|基督)|政治|党员"
-    r"|坐牢|犯罪|被抓|官司|起诉|欠(钱|债)|工资|收入|存款|负债|贷款)", re.I)
+    r"|坐牢|犯罪|被抓|官司|起诉|欠(钱|债)|工资|[月年]薪|薪水|收入|存款|负债|贷款)", re.I)
 
 
 @dataclass

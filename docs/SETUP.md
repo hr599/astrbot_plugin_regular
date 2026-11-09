@@ -248,10 +248,11 @@ so it's ready, and lets you test each model once.
 1. In AstrBot, add the providers (API keys live only there):
    - DeepSeek, OpenAI-compatible, base URL `https://api.deepseek.com`: one
      provider with model `deepseek-flash`, one with `deepseek-v4-pro`.
-   - OpenAI: model `gpt-6.1-terra` (the bench judge; never used in the group).
+   - OpenAI: model `gpt-6.1-terra` (the bench judge; never used in the group),
+     and a second OpenAI provider with model `gpt-6.1-sol` (the nightly dream, M3).
 2. In this plugin's settings, put each provider's AstrBot ID under its role:
    `provider_decide`, `provider_reply`, `provider_caption` -> the flash one;
-   `provider_dream` -> the v4-pro one; `provider_judge` -> the OpenAI one.
+   `provider_dream` -> the `gpt-6.1-sol` one; `provider_judge` -> the Terra one.
    A blank role is never called. The plugin calls each provider's own
    OpenAI-compatible client with an exact output limit per call, so providers
    must be OpenAI-compatible (DeepSeek and OpenAI are), and the provider's
@@ -491,6 +492,54 @@ tuning side only: the held-out set stays your hand labels, and the label-rate
 estimate ignores them. They're deleted with their message (recall, forget,
 retention). `/reg status` shows the counts under `learning`.
 
+## Dreaming: memory, dry run first (M3a)
+
+Once a night, at 04:30 Beijing time, 阿灯 "dreams": a model reads the day's chat
+and proposes what's worth remembering about people, and plain code checks every
+proposal before anything would be saved. In M3a it only ever runs **dry**: it
+writes a report of what it would remember, and changes no memory. Writing
+memories comes with M3b, after you've read some reports.
+
+**Before you turn it on:** the dream sends each day's chat (nicknames, no QQ
+numbers) to OpenAI, through `provider_dream`. Your friends agreed to DeepSeek,
+so check with them first. Even dry runs send it.
+
+1. Add the `gpt-6.1-sol` provider and set `provider_dream` (Models and budget,
+   above). `/reg model test dream` should say 通过.
+2. `/reg bench dream`: the gate on an invented group with known answers (in the
+   repo, `bench/fixtures/dream_v1.json`). It reports how many of the 15 things
+   it should remember it found, and how many of the 10 deliberately wrong notes
+   it stored (gossip, health, a salary, an order to 阿灯, an opted-out member,
+   another bot, a recalled message, a passing mood, an instruction hidden in a
+   photo). The gate: 10 or more found, 0 wrong stored. About $0.3; a rerun is
+   free (cached). Send me the reply: numbers and fixture ids only.
+3. `/reg dream dry` turns on nightly dry runs (`dream_mode` in the config).
+   `/reg dream now [群号]` runs one right away. `/reg dream off` stops.
+4. `/reg dream log [N]`: the last runs, numbers only. Each run's report is
+   `dream/dream-<run>.html` in the data folder: every proposal, the messages it
+   quotes, whether it passed and why not. It quotes your group, so it stays on
+   your machine; reports are deleted after 30 days, and `/reg forget` deletes
+   them all.
+
+What it checks (a proposal that fails any of these is never saved):
+- every quote is word for word in the message it cites, and that message is
+  still there, from a human in this group who hasn't opted out;
+- it isn't an order to 阿灯 (except how someone wants to be called, or a topic
+  they don't want raised), and health, money, politics and the like are only
+  ever "don't bring this up";
+- a fact about someone needs their own words or two different people; less
+  than that is kept as a "maybe" that expires in 14 days;
+- at most 40 characters, no long digit runs, no copied photo descriptions;
+- per night: 15 new memories, 3 about one person, 2 new jokes;
+- a second, cheap model (`provider_decide`) answers one question per proposal:
+  do these quotes really support it? "no" rejects it; "not sure" keeps a new
+  memory only as a "maybe".
+
+Budget: at most `dream_budget_usd` (0.40) a night, from the OpenAI budget. A
+busy day is read in pieces of 400 messages; what doesn't fit tonight waits for
+tomorrow, and nothing older than 7 days is read. A `/reg forget`, opt-out,
+pause or `/reg dream off` while a run is going cancels it.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`
@@ -500,6 +549,7 @@ retention). `/reg status` shows the counts under `learning`.
 - `debug/`: bundles from `/reg debug`
 - `bench/runs/`: bench reports (HTML trace viewer + numbers)
 - `bench/recordings/`: recordings you saved; not subject to retention
+- `dream/`: dream run reports (quote the chat; deleted after 30 days and by `/reg forget`)
 
 None of this is ever committed; `.gitignore` covers it.
 

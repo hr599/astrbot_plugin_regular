@@ -17,7 +17,7 @@ try:  # inside the plugin package
 except ImportError:  # repo root on sys.path (tests, CLI)
     from core.perceive import is_command_like as _is_command_like
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
 # when its message is purged or recalled, unless it was saved into a recording), and
@@ -80,6 +80,18 @@ MIGRATIONS = {
       reason   TEXT NOT NULL,
       created  INTEGER NOT NULL
     );
+    """,
+    # v7 (M3a): what each dream run was. mode dry|on, status ok|failed|void|skipped,
+    # trigger night|now|bench, where the span ended (a time, since its message may be
+    # purged), cost, and counts: numbers only, so /reg status and the debug bundle
+    # can read them without touching memory text.
+    7: """
+    ALTER TABLE dream_runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'on';
+    ALTER TABLE dream_runs ADD COLUMN status TEXT NOT NULL DEFAULT 'ok';
+    ALTER TABLE dream_runs ADD COLUMN trigger TEXT;
+    ALTER TABLE dream_runs ADD COLUMN span_to_ts INTEGER;
+    ALTER TABLE dream_runs ADD COLUMN cost REAL NOT NULL DEFAULT 0;
+    ALTER TABLE dream_runs ADD COLUMN counts TEXT NOT NULL DEFAULT '{}';
     """,
 }
 SESSION_GAP_S = 30 * 60  # a pause this long starts a new session
@@ -769,7 +781,8 @@ def _mentions(blob: str | None, pid: int, msg_ids: set[str], claim_ids: set[int]
             for v in x:
                 walk(v, key)
         elif isinstance(x, str):
-            found = x in msg_ids
+            # a message id, or a person named inside memory text as {p:<id>} (M3)
+            found = x in msg_ids or (pid is not None and f"{{p:{pid}}}" in x)
         elif isinstance(x, int) and not isinstance(x, bool):
             found = (pid is not None and key in ("subject", "object", "subject_id", "object_id", "person_id",
                                                  "author_id") and x == pid) or \
