@@ -160,7 +160,8 @@ def forget_reports(folder: Path) -> int:
     Returns reports deleted."""
     n = 0
     if folder.exists():
-        for p in folder.glob("bench-*.html"):
-            p.unlink(missing_ok=True)
-            n += 1
+        for pat in ("bench-*.html", "compose-*.html"):  # compose drafts quote the chat too
+            for p in folder.glob(pat):
+                p.unlink(missing_ok=True)
+                n += 1
     return n

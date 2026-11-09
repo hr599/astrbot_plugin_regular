@@ -116,14 +116,17 @@ _CN_UNIT = {"十": 10, "百": 100, "千": 1000}
 _CN = "零〇一二两三四五六七八九十百千万"
 _DAYPART = "凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|今晚|明早|明晚|夜里|半夜"
 _N = r"(?<![\d.])"  # start at the beginning of a number, never inside one
+_DAY = r"(?:今天|明天|后天|今儿|明儿)?"  # which day, kept apart from 上午/下午 (issue #13)
+_DAY_OF = {"今天": "d0", "今儿": "d0", "今晚": "d0", "明天": "d1", "明儿": "d1", "明早": "d1", "明晚": "d1",
+           "后天": "d2"}
 
 _SPECIFICS = [
     ("date", re.compile(rf"{_N}(\d{{1,2}}|[{_CN}]{{1,3}})月((\d{{1,2}}|[{_CN}]{{1,3}})[日号])?")),
     ("date", re.compile(rf"{_N}(?<![{_CN}])(\d{{1,2}}|[{_CN}]{{1,3}})[日号](?![码线楼床])")),
     ("weekday", re.compile(r"(周|星期|礼拜)[一二三四五六日天]")),
-    ("time", re.compile(rf"({_DAYPART})?({_N}\d{{1,2}}[:：]\d{{2}}|{_N}\d{{1,2}}点(半|\d{{1,2}}分?|[{_CN}]{{1,3}}分)?)")),
+    ("time", re.compile(rf"{_DAY}({_DAYPART})?({_N}\d{{1,2}}[:：]\d{{2}}|{_N}\d{{1,2}}点(半|\d{{1,2}}分?|[{_CN}]{{1,3}}分)?)")),
     # Chinese-numeral times: validated in _cn_time_ok ("好一点"/"差一点" aren't times)
-    ("cn_time", re.compile(rf"({_DAYPART})?(?<![{_CN}])([{_CN}]{{1,3}})点(半|钟|[{_CN}]{{1,3}}分)?")),
+    ("cn_time", re.compile(rf"{_DAY}({_DAYPART})?(?<![{_CN}])([{_CN}]{{1,3}})点(半|钟|[{_CN}]{{1,3}}分)?")),
     ("price", re.compile(rf"[¥￥$]\s?\d+(\.\d+)?[千万亿]?|{_N}\d+(\.\d+)?\s?[千万亿]?\s?(块|元|毛|美元|刀)")),
     # Chinese-numeral prices: "一块" alone is usually 一块儿 (together), so it needs 钱
     ("cn_price", re.compile(rf"(?<![{_CN}])([{_CN}]{{1,6}})(块|元|毛)(钱)?")),
@@ -173,11 +176,16 @@ def _canon(kind: str, tok: str) -> str:
     if kind == "weekday":
         return "weekday:" + t[-1].replace("天", "日")
     if kind == "time":
+        day_m = re.match(r"今天|明天|后天|今儿|明儿", t)
+        day = _DAY_OF[day_m.group(0)] if day_m else ""
+        t = t[day_m.end():] if day_m else t
         dp = re.match(rf"({_DAYPART})", t)
+        if dp and not day:
+            day = _DAY_OF.get(dp.group(1), "")  # 今晚 / 明晚 / 明早 also say which day
         t = _arabic(t[dp.end():] if dp else t).replace("钟", "")
         m = re.fullmatch(r"(\d+)(?::(\d+)|点(半|(\d+)分?)?)", t)
         if not m:
-            return "time:" + t
+            return "time:" + t + "::" + day
         h = int(m.group(1))
         mm = int(m.group(2) or (30 if m.group(3) == "半" else (m.group(4) or 0)))
         # keep 上午/下午: as 12-hour clock + period; "" when the text doesn't say
@@ -188,7 +196,7 @@ def _canon(kind: str, tok: str) -> str:
             period = {"凌晨": "am", "早上": "am", "早晨": "am", "上午": "am", "明早": "am",
                       "中午": "pm", "下午": "pm", "傍晚": "pm", "晚上": "pm", "今晚": "pm", "明晚": "pm"
                       }.get(dp.group(1), "")
-        return f"time:{h % 12}:{mm:02d}:{period}"
+        return f"time:{h % 12}:{mm:02d}:{period}:{day}"
     if kind == "price":
         # currency kept (元 ≠ 美元), exact decimal kept (10000.01 ≠ 10000.02)
         usd = bool(re.search(r"[$]|美元|刀", t))
@@ -207,7 +215,24 @@ def _canon(kind: str, tok: str) -> str:
         d = re.search(r"(\d+)[日号]", t)
         return f"date:{int(mo.group(1)) if mo else ''}/{int(d.group(1)) if d else ''}"  # 01月05号 = 1月5号
     t = t.replace("零下", "-").replace("−", "-")  # the sign is part of the value
+    m = re.fullmatch(r"(-?)(\d+(?:\.\d+)?)(%?)", t)
+    if m:  # 12.0 = 12, 12.50% = 12.5%; sign and % kept (issue #13)
+        v = format(Decimal(m.group(2)).normalize(), "f")
+        return f"number:{m.group(1)}{v}{m.group(3)}"
     return "number:" + t
+
+
+_APPROX = re.compile(r"[一二两三四五六七八九]{2}")
+
+
+def _approx(tok: str) -> bool:
+    """三四点, 两三点, 五六十块: a range said on purpose, i.e. a hedge, not a made-up
+    exact value (issue #13). Two neighbouring digits in a row."""
+    for m in _APPROX.finditer(tok):
+        a, b = (_CN_DIG[c] for c in m.group(0))
+        if b - a == 1 or m.group(0) == "两三":
+            return True
+    return False
 
 
 def _specifics(text: str) -> list[tuple[str, str, str]]:
@@ -224,6 +249,8 @@ def _specifics(text: str) -> list[tuple[str, str, str]]:
             if any(a < y and x < b for x, y in spans):
                 continue  # part of a date/time/price already taken
             spans.append((a, b))
+            if _approx(m.group(0)):
+                continue  # a range is a hedge; its span still stops a shorter match inside it
             k = kind.removeprefix("cn_")
             out.append((k, m.group(0), _canon(k, m.group(0))))
     return out
@@ -232,10 +259,20 @@ def _specifics(text: str) -> list[tuple[str, str, str]]:
 def _supported(canon: str, known: set[str]) -> bool:
     if canon in known:
         return True
-    if canon.startswith("time:"):  # a side that doesn't say 上午/下午 matches either
-        clock, period = canon.rsplit(":", 1)
-        return any(k.rsplit(":", 1)[0] == clock and (not period or not k.rsplit(":", 1)[1])
-                   for k in known if k.startswith("time:"))
+    if canon.startswith("time:"):
+        # a side that doesn't say 上午/下午, or which day, matches either; when both
+        # say, they must agree (今晚八点 isn't backed by 明晚八点, issue #13)
+        def parts(c: str) -> tuple[str, str, str]:
+            body, period, day = c.rsplit(":", 2)
+            return body, period, day
+        cb, cp, cd = parts(canon)
+        for k in known:
+            if not k.startswith("time:"):
+                continue
+            kb, kp, kd = parts(k)
+            if kb == cb and (not cp or not kp or cp == kp) and (not cd or not kd or cd == kd):
+                return True
+        return False
     return False
 
 

@@ -44,7 +44,7 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
 
 def bench_command(store, data_dir: Path, args: list[str], *,
                   aliases: tuple[str, ...] = DEFAULT_ALIASES, group_ids=None,
-                  bot_uids=frozenset(), on_params_change=None, models=None, persona_prompt: str = ""):
+                  bot_uids=frozenset(), on_params_change=None, models=None, persona_prompt: str = "", persona=None):
     """group_ids: the watched groups. Saving uses only those (an old group left in
     the db after a config change is skipped, PR #4 review round 3)."""
     bench_dir = data_dir / "bench"
@@ -90,6 +90,18 @@ def bench_command(store, data_dir: Path, args: list[str], *,
             except Exception as e:  # noqa: BLE001 - surface it to the admin
                 return f"bench model 出错：{type(e).__name__}: {e}"
         return AsyncReply(run, placeholder="正在让模型判断…")
+    if args and args[0].lower() == "compose":
+        from ._core import AsyncReply
+        from .compose_bench import DEFAULT_N, compose_bench
+        n = int(args[1]) if len(args) > 1 and args[1].isdigit() else DEFAULT_N
+        todo = [r for r in recs if r.messages]
+
+        async def run_compose() -> str:
+            try:
+                return await compose_bench(todo, data_dir, client=models, persona=persona, aliases=aliases, n=n)
+            except Exception as e:  # noqa: BLE001 - surface it to the admin
+                return f"bench compose 出错：{type(e).__name__}: {e}"
+        return AsyncReply(run_compose, placeholder="正在写回复草稿…")
     if tuning:
         from .tune import tune_command
         return tune_command([r for r in recs if r.messages], data_dir, args[1:], aliases=aliases,
@@ -118,8 +130,10 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     runs = sorted((data_dir / "bench" / "runs").glob("bench-*.json"))
     model_last = data_dir / "bench" / "model-last.json"
     model = json.loads(model_last.read_text(encoding="utf-8")) if model_last.exists() else None
-    if not runs:
-        return {"model": model} if model else None  # a /reg bench model run alone still shows up
+    compose_last = data_dir / "bench" / "compose-last.json"
+    compose = json.loads(compose_last.read_text(encoding="utf-8")) if compose_last.exists() else None
+    if not runs:  # a /reg bench model or compose run alone still shows up
+        return {"model": model, "compose": compose} if model or compose else None
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
     keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
@@ -127,6 +141,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
             "expects", "bot_loop_breaks")
     return {
         "model": model,
+        "compose": compose,
         "file": runs[-1].name,
         "totals": d["totals"],
         "runs": [{"source": r["source"],

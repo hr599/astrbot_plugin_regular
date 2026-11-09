@@ -88,16 +88,37 @@ def _line(m: Msg, names: dict[str, str], ids: dict[str, str]) -> str:
     return f"{who}{tag}：{_clip(_hide_ids(m.text or '', ids)) or '[空]'}"
 
 
-def build_prompt(m: Msg, context: list[Msg], now: int, rhythm: str = "free") -> str:
+def render_chat(m: Msg, context: list[Msg], n: int = CONTEXT_LINES) -> str:
+    """The last n messages and the target (marked →), speakers as letters, @-numbers
+    hidden, fenced in <chat> (shared by decide and compose)."""
+    return _render(m, context, n)[0]
+
+
+def speaker_letters(m: Msg, context: list[Msg], n: int = CONTEXT_LINES) -> set[str]:
+    """The letters render_chat used for people (compose: they must never go out)."""
+    return set(_render(m, context, n)[1].values())
+
+
+def _render(m: Msg, context: list[Msg], n: int) -> tuple[str, dict[str, str]]:
     names: dict[str, str] = {}
     ids: dict[str, str] = {}
-    ctx = [c for c in context if c.msg_id != m.msg_id][-CONTEXT_LINES:]
+    ctx = [c for c in context if c.msg_id != m.msg_id][-n:]
     lines = [_line(c, names, ids) for c in ctx]
     target = "→ " + _line(m, names, ids)
-    t = datetime.fromtimestamp(now + 8 * 3600, tz=timezone.utc).strftime("%H:%M")
-    state = {"class": "在上课", "free": "有空", "night_owl": "夜猫子时间，最活跃", "asleep": "在睡觉"}.get(rhythm, "有空")
     chat = "\n".join(lines + [target]).replace("</chat>", "<\\/chat>")
-    return f"现在是 {t}（阿灯{state}）。\n<chat>\n{chat}\n</chat>\n给标了 → 的那条打分。"
+    return f"<chat>\n{chat}\n</chat>", names
+
+
+RHYTHM_WORDS = {"class": "在上课", "free": "有空", "night_owl": "夜猫子时间，最活跃", "asleep": "在睡觉"}
+
+
+def clock(now: int, rhythm: str = "free") -> str:
+    t = datetime.fromtimestamp(now + 8 * 3600, tz=timezone.utc).strftime("%H:%M")
+    return f"现在是 {t}（阿灯{RHYTHM_WORDS.get(rhythm, '有空')}）。"
+
+
+def build_prompt(m: Msg, context: list[Msg], now: int, rhythm: str = "free") -> str:
+    return f"{clock(now, rhythm)}\n{render_chat(m, context)}\n给标了 → 的那条打分。"
 
 
 def system_prompt(persona_prompt: str) -> str:
