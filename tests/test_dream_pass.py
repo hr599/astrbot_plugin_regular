@@ -706,3 +706,25 @@ class Review42Tests(unittest.TestCase):
         first, second = (json.loads(r["diff_json"]) for r in rows)
         self.assertEqual(first[0]["verdict"], "accepted")
         self.assertEqual((second[0]["verdict"], second[0]["reason"].split(":")[0]), ("rejected", "duplicate"))
+
+    def test_a_recalled_quote_inside_a_live_line_isnt_sent(self):
+        """PR #42 review: 小王 quotes 小李's line; 小李's line is recalled while the
+        dreamer runs; the quote snippet inside 小王's line must not go out either."""
+        w = World()
+        w.chat()
+        probe = w.say("小李", "撤回探针周末去植物园")
+        w.say("小王", "我知道了", reply_to=probe)
+        a = w.say("小王", "我在学日语")
+        two_pass(w, lambda r: [])
+        w.store.db.execute("DELETE FROM dream_runs")
+        ref = ref_of(w, a)
+        self.assertIn("撤回探针", [p for s, p in w.prompts if s == dp.INSTRUCTIONS][-1])  # shown before the recall
+        w.during = lambda: w.store.recall(probe)
+        w.dream_answers = [{"ops": [{"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+                                     "evidence": [{"ref": ref, "quote": "我在学日语"}]}]}]
+        w.run()
+        sp = [p for s, p in w.prompts if s == dp.SUPPORT_INSTRUCTIONS][-1]
+        self.assertNotIn("撤回探针", sp)
+        self.assertIn("原文（小王）：“我在学日语”", sp)
+        report = sorted((w.d / "dream").glob("*.html"))[-1].read_text(encoding="utf-8")
+        self.assertNotIn("撤回探针", report)

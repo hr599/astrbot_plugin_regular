@@ -187,6 +187,8 @@ class Prompt:
     names: dict[int, str] = field(default_factory=dict)  # person_id -> handle
     lines: dict[str, str] = field(default_factory=dict)  # msg_id -> rendered line (support check context)
     prev: dict[str, str] = field(default_factory=dict)  # msg_id -> the message id before it
+    deps: dict[str, set] = field(default_factory=dict)  # msg_id -> every message its line shows text of
+    speakers: dict[str, str] = field(default_factory=dict)  # msg_id -> who said it
 
 
 def _clip(t: str) -> str:
@@ -219,17 +221,21 @@ def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset()) -> Pr
             return None  # opted out, or recalled
         who = _speaker(m, spk)
         tag = ""
+        deps = {m.msg_id}
         if m.reply_to and m.reply_to in by_id:
             q = by_id[m.reply_to]
             if not q.from_bot and q.sender not in opted and q.text:
                 snip = _clip(_hide_ids(q.text, ids))[:20]
                 tag = f"（回复 {_speaker(q, spk)}：“{snip}”）"
+                deps.add(q.msg_id)  # the line quotes it: a recall of it retires the line too
         n += 1
         ref = f"m{n}"
         pr.refs[ref] = m.msg_id
         body = _clip(_hide_ids(with_captions(m.text, m.captions), ids))
         text = f"{who}{tag}：{body}"
         pr.lines[m.msg_id] = text
+        pr.deps[m.msg_id] = deps
+        pr.speakers[m.msg_id] = who
         pr.prev[m.msg_id] = prev_id
         prev_id = m.msg_id
         return f"{ref} [{stamp}] {text}"
@@ -487,8 +493,7 @@ def support_prompt(items: list[Op], store, pr: Prompt) -> str:
         lines = [f"{i}. [{op.kind}] 关于{who}：{claim}"]
         for e in quotes:
             prev = pr.lines.get(pr.prev.get(e.msg_id, ""), "")
-            line = pr.lines.get(e.msg_id, "")
-            speaker = line.split("：", 1)[0] if "：" in line else ""
+            speaker = pr.speakers.get(e.msg_id, "")
             if prev:
                 lines.append(f"   上一句：{prev}")
             lines.append(f"   原文（{speaker}）：“{e.quote}”")
@@ -599,19 +604,20 @@ def refresh(store, msgs: list) -> None:
 
 
 def forget_dead(store, pr: Prompt) -> list[str]:
-    """Drop recalled or removed messages from a prompt's lines (the support check's
-    context). Returns the ids dropped."""
-    ids = list(pr.lines)
+    """Drop from a prompt's lines (the support check's context) every line that shows
+    text of a message recalled or removed since: its own, or a quoted one embedded
+    in it (PR #42 review). Returns the ids of the lines dropped."""
+    ids = sorted({i for d in pr.deps.values() for i in d} | set(pr.lines))
     live = set()
     for i in range(0, len(ids), 500):
         part = ids[i:i + 500]
         q = ",".join("?" * len(part))
         live |= {r[0] for r in store.db.execute(
             f"SELECT msg_id FROM messages WHERE msg_id IN ({q}) AND recalled=0", part)}
-    dead = [i for i in ids if i not in live]
-    for i in dead:
+    dropped = [i for i in list(pr.lines) if not pr.deps.get(i, {i}) <= live]
+    for i in dropped:
         pr.lines.pop(i, None)
-    return dead
+    return dropped
 
 
 def reject_dead_evidence(outcome: Outcome, store) -> None:
