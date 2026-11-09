@@ -37,6 +37,7 @@ TEMPERATURE = 0.9
 CONTEXT_LINES = 16
 LENGTH_FACTOR = 2  # a reply may run to about two of the group's long messages (parts)
 PASS = "[不说]"
+RAW_SHOWN = 300  # a malformed answer, as the local report shows it
 
 INSTRUCTIONS = """\
 现在轮到你（阿灯）在群里接话，标了 → 的是最新的一条。
@@ -130,7 +131,9 @@ def parse_output(text: str) -> tuple[str, str] | None:
     The gist is the model's read of the room, kept for the local report only."""
     t = _FENCE.sub("", (text or "").strip()).strip()
     try:
-        obj = json.loads(t)
+        # strict=False: a reply sent as two messages has a real line break inside the
+        # string, which strict JSON rejects (Nov 9 run: 19 of 30 first drafts failed so)
+        obj = json.loads(t, strict=False)
     except ValueError:
         return None
     if not isinstance(obj, dict) or set(obj) != {"gist", "reply"}:
@@ -212,7 +215,8 @@ async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhyt
         gist, raw = parsed if parsed else ("", "")
         draft = clean(raw)
         out.gists.append(gist)
-        out.drafts.append(draft if parsed else (f"<{r.outcome}>" if not r.ok else "<格式不对>"))
+        bad = f"<格式不对> {r.text.strip()[:RAW_SHOWN]}" if r.ok else f"<{r.outcome}>"
+        out.drafts.append(draft if parsed else bad)  # the raw text goes to the local report only
         if parsed and draft == PASS:
             out.outcome = "pass"
             return out
