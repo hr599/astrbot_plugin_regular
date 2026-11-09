@@ -134,6 +134,8 @@ class Store:
                 )
             self.db.execute("DELETE FROM message_media WHERE msg_id=?", (r["msg_id"],))
             self.db.execute("DELETE FROM messages WHERE rowid=?", (r["rowid"],))
+        if drop:
+            self.purge_orphan_media()
         for r in keep:
             self.db.execute("UPDATE messages SET is_command_like=0 WHERE rowid=?", (r["rowid"],))
         return len(drop)
@@ -273,10 +275,6 @@ class Store:
                 ORDER BY m.ts ASC LIMIT ?""",
             (*scope_ids, before_ts, limit),
         ).fetchall()
-
-    def message_live(self, msg_id: str) -> bool:
-        """Still stored and not recalled (forget and retention delete the row)."""
-        return bool(self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone())
 
     def people_with_uids(self, uids) -> list[int]:
         uids = [str(u) for u in uids]
@@ -431,6 +429,59 @@ class Store:
         self.db.execute("UPDATE sessions SET n_msgs=n_msgs+1 WHERE session_id=?", (sid,))
         return True
 
+    # ---- media captions (M2: images) -------------------------------------
+    def media_caption(self, media_key: str) -> tuple[str, str] | None:
+        """(caption, ocr_text) for an image already described, else None."""
+        r = self.db.execute("SELECT caption, ocr_text FROM media WHERE media_key=? AND caption IS NOT NULL",
+                            (media_key,)).fetchone()
+        return (r["caption"], r["ocr_text"] or "") if r else None
+
+    def put_media(self, media_key: str, kind: str, caption: str, ocr: str, now: int) -> None:
+        self.db.execute(
+            """INSERT INTO media (media_key, kind, caption, ocr_text, first_seen, last_seen)
+               VALUES (?,?,?,?,?,?)
+               ON CONFLICT (media_key) DO UPDATE SET caption=excluded.caption, ocr_text=excluded.ocr_text,
+                 last_seen=excluded.last_seen""",
+            (media_key, kind, caption, ocr, now, now))
+
+    def link_media(self, msg_id: str, position: int, media_key: str, now: int) -> bool:
+        """Attach a described image to a message. False (nothing written) if the message
+        is gone or was recalled meanwhile."""
+        if not self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone():
+            return False
+        cur = self.db.execute("INSERT OR IGNORE INTO message_media (msg_id, position, media_key) VALUES (?,?,?)",
+                              (msg_id, position, media_key))
+        if cur.rowcount:
+            self.db.execute("UPDATE media SET n_seen=n_seen+1, last_seen=? WHERE media_key=?", (now, media_key))
+        return bool(cur.rowcount)
+
+    def captions_for(self, msg_ids) -> dict[str, list[tuple[int, str, str]]]:
+        """msg_id -> [(position, caption, ocr), ...] for messages that have any. The
+        position is the photo's index among the message's photos: a photo without a
+        caption leaves a gap, never shifts the next one onto it (PR #34 review)."""
+        ids = list(msg_ids)
+        out: dict[str, list[tuple[int, str, str]]] = {}
+        for i in range(0, len(ids), 500):
+            chunk = ids[i:i + 500]
+            q = ",".join("?" * len(chunk))
+            for r in self.db.execute(
+                    f"""SELECT mm.msg_id, mm.position, md.caption, md.ocr_text
+                        FROM message_media mm JOIN media md USING (media_key)
+                        WHERE mm.msg_id IN ({q}) AND md.caption IS NOT NULL ORDER BY mm.msg_id, mm.position""",
+                    chunk):
+                out.setdefault(r["msg_id"], []).append((int(r["position"]), r["caption"], r["ocr_text"] or ""))
+        return out
+
+    def message_live(self, msg_id: str) -> bool:
+        """Still stored and not recalled (forget and retention delete the row)."""
+        return bool(self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone())
+
+    def purge_orphan_media(self) -> int:
+        """Captions no stored message points to any more (recalled, forgotten, past
+        retention) are deleted: a caption lives exactly as long as a message showing it."""
+        return self.db.execute(
+            "DELETE FROM media WHERE media_key NOT IN (SELECT DISTINCT media_key FROM message_media)").rowcount
+
     def recall(self, msg_id: str) -> bool:
         """撤回: blank the text and drop it from search. Returns True if found."""
         row = self.db.execute(
@@ -444,6 +495,7 @@ class Store:
         )
         self.db.execute("UPDATE messages SET text='', recalled=1 WHERE msg_id=?", (msg_id,))
         self.db.execute("DELETE FROM message_media WHERE msg_id=?", (msg_id,))
+        self.purge_orphan_media()  # a recalled photo's caption goes with it
         self.db.execute("DELETE FROM labels WHERE msg_id=?", (msg_id,))
         self.db.execute("DELETE FROM label_skips WHERE msg_id=?", (msg_id,))
         self.db.execute("DELETE FROM auto_labels WHERE msg_id=?", (msg_id,))
@@ -500,6 +552,7 @@ class Store:
             "DELETE FROM message_media WHERE msg_id IN (SELECT msg_id FROM messages WHERE ts<?)",
             (cutoff_ts,),
         )
+        self.purge_orphan_media()
         for t in ("labels", "label_skips", "auto_labels"):
             self.db.execute(
                 f"DELETE FROM {t} WHERE msg_id IN (SELECT msg_id FROM messages WHERE ts<?)", (cutoff_ts,)
@@ -589,6 +642,7 @@ class Store:
             sub = "(SELECT msg_id FROM messages WHERE person_id=?)"
             for t in ("message_media", "labels", "label_skips", "auto_labels", "traces", "episode_evidence"):
                 db.execute(f"DELETE FROM {t} WHERE msg_id IN {sub}", (pid,))
+            self.purge_orphan_media()  # captions of their photos (unless someone else posted the same one)
             # memory: claims about them, then evidence quoting them in claims about others
             gone = {r[0] for r in db.execute("SELECT claim_id FROM claims WHERE subject_id=? OR object_id=?",
                                              (pid, pid))}

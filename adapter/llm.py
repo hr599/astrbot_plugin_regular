@@ -39,7 +39,12 @@ def make_call(context):
             raise RuntimeError(f"provider {provider_id!r} has no OpenAI-compatible client: "
                                "can't enforce a per-call output limit, so it isn't called")
         model = prov.get_model()
-        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+        user: Any = prompt
+        if params.get("images"):  # OpenAI-compatible vision parts: text, then each image as a data URL
+            user = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
+                for mime, b64 in params["images"]]
+        messages = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": user}]
         kw: dict[str, Any] = {"model": model, "messages": messages, "stream": False,
                               limit_key(model): int(params["max_tokens"])}
         extra_body = dict(params.get("extra_body") or {})

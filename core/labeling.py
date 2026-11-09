@@ -20,6 +20,8 @@ import json
 import random
 import time
 
+from .captions import by_position
+from .decide_model import with_captions
 from .decide import DEFAULT_ALIASES, name_addressed
 
 CHOICES = {
@@ -128,12 +130,14 @@ class Labeler:
         return self._pending.get("", [])
 
 
-    def _line(self, r, mark: str, labels: dict | None = None) -> str:
+    def _line(self, r, mark: str, labels: dict | None = None, caps: dict | None = None) -> str:
         """One message as the labeler sees it: a quote of someone else is marked
         (the text alone didn't show it), and in the context, a moment you already
         labelled as 阿灯 speaking is flagged, so you can picture him having just said
         something (first compose drafts, Nov 9: runs of 3s in one thread)."""
         text = "[已撤回]" if r["recalled"] else r["text"]
+        if caps and r["msg_id"] in caps:
+            text = with_captions(text, by_position(caps[r["msg_id"]]))
         to = ""
         if r["reply_to"]:
             to = f"（回复 {self.store.sender_name_of(r['reply_to']) or '别人'}）"
@@ -172,9 +176,11 @@ class Labeler:
         labels = self.store.labels()
         blocks = []
         for i, r in enumerate(rows, 1):
-            ctx = [self._line(c, "   ", labels) for c in self.store.before(r["msg_id"], self.context)]
+            before = self.store.before(r["msg_id"], self.context)
+            caps = self.store.captions_for([c["msg_id"] for c in before] + [r["msg_id"]])
+            ctx = [self._line(c, "   ", labels, caps) for c in before]
             where = f" 群 {r['scope_id'].rsplit(':', 1)[-1]}" if multi else ""
-            blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ")]))
+            blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ", caps=caps)]))
         return blocks
 
     def _next_recheck(self, who: str) -> str:

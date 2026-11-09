@@ -127,13 +127,15 @@ class Budget:
         return float(row[0])
 
     # ---------------------------------------------------------------- gate
-    def check(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None) -> float:
+    def check(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None,
+              extra_input_tokens: int = 0) -> float:
         """Raise BudgetExceeded if this call could take today past the cap.
         Returns the worst-case estimate (bucket currency). Doesn't reserve: see reserve()."""
         now = int(time.time()) if now is None else now
         bucket = self.bucket_of(model)
         cap = self.daily_cap(bucket)
-        est = self.to_bucket(cost_usd(model, Usage(input_other=estimate_tokens(prompt_text), output=max_tokens),
+        est = self.to_bucket(cost_usd(model, Usage(input_other=estimate_tokens(prompt_text) + extra_input_tokens,
+                                                   output=max_tokens),
                                       now, self.prices, force_peak=True), bucket)
         spent = self.spent(bucket, now) + self._pending.get(bucket, 0.0)
         if cap <= 0 or spent + est > cap:
@@ -142,10 +144,11 @@ class Budget:
                 f"> daily cap {cap:.4f} {self.currency(bucket)}")
         return est
 
-    def reserve(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None) -> tuple[str, float]:
+    def reserve(self, model: str, prompt_text: str, max_tokens: int, now: int | None = None,
+                extra_input_tokens: int = 0) -> tuple[str, float]:
         """check() and hold the estimate until release(): calls that overlap can't
         share the same remaining budget (#20). Synchronous, so atomic under asyncio."""
-        est = self.check(model, prompt_text, max_tokens, now)
+        est = self.check(model, prompt_text, max_tokens, now, extra_input_tokens)
         bucket = self.bucket_of(model)
         self._pending[bucket] = self._pending.get(bucket, 0.0) + est
         return bucket, est

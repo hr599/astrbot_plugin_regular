@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, M2_POLICY, POLICY_VERSION, Decision, Msg, decide, decide_m2, limits, merged_msg, tier_of
+from ._core import DEFAULT_ALIASES, M2_POLICY, POLICY_VERSION, Decision, Msg, decide, decide_m2, limits, merged_captions, merged_msg, tier_of
 from .situations import Recording
 from .splits import is_test
 

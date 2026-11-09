@@ -18,6 +18,7 @@ use it: the same moment twice should not get a canned repeat.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
@@ -33,7 +34,7 @@ ROLES = ("decide", "reply", "caption", "dream", "judge")
 # high / max = reasoning effort. The judge reasons a little; the dream pass a lot.
 THINKING = ("off", "low", "high", "max")
 THINKING_DEFAULTS = {"decide": "off", "reply": "off", "caption": "off", "dream": "high", "judge": "low"}
-BUDGET_KEYS = {"max_tokens", "max_completion_tokens", "max_output_tokens", "n", "stream", "model", "messages",
+BUDGET_KEYS = {"images", "max_tokens", "max_completion_tokens", "max_output_tokens", "n", "stream", "model", "messages",
                "thinking", "reasoning_effort", "reasoning"}  # set through max_tokens= / thinking=
 
 
@@ -61,6 +62,11 @@ class Result:
     def ok(self) -> bool:
         return self.outcome == "ok"
 
+
+# an image's input tokens aren't bounded by its bytes the way text is; this per-image
+# allowance is the budget's worst case (vision models tile a large image into at most
+# a few thousand tokens)
+IMAGE_TOKEN_BOUND = 4000
 
 # returns (text, usage) or (text, usage, finish_reason)
 CallFn = Callable[[str, str, str, dict[str, Any]], Awaitable[tuple]]
@@ -90,7 +96,10 @@ class ModelClient:
 
     async def generate(self, role: str, *, system: str = "", prompt: str, max_tokens: int = 512,
                        temperature: float | None = None, cache: bool = False,
-                       extra: dict[str, Any] | None = None, thinking: str | None = None) -> Result:
+                       extra: dict[str, Any] | None = None, thinking: str | None = None,
+                       images: list[tuple[str, bytes]] | None = None) -> Result:
+        """images: (mime, bytes) pairs sent with the prompt (caption role). Their
+        hashes, never their bytes, go into the cache key."""
         pid = self.provider(role)
         model = self.model_of(pid)
         bad = BUDGET_KEYS & set(extra or {})
@@ -106,6 +115,9 @@ class ModelClient:
         if extra:
             params["extra_body"] = dict(extra)
         now = int(self.clock())
+        imgs = list(images or [])
+        if imgs:
+            params["image_sha256"] = [hashlib.sha256(b).hexdigest() for _, b in imgs]
         key = self.cache_key(model, system, prompt, params) if cache else None
         store = self.budget.store
         if key:
@@ -116,11 +128,15 @@ class ModelClient:
                                    cached_response=True, now=now, finish_reason="stop")
                 return Result(hit["text"], model, u, 0.0, True, 0, "stop")
         gen = getattr(store, "cache_gen", 0)  # a forget during the call voids its cache write (#20)
-        bucket, est = self.budget.reserve(model, system + prompt, params["max_tokens"], now)  # BudgetExceeded
+        bucket, est = self.budget.reserve(model, system + prompt, params["max_tokens"], now,
+                                          extra_input_tokens=IMAGE_TOKEN_BOUND * len(imgs))  # BudgetExceeded
         t0 = self.clock()
         try:
             try:
-                out = await self.call(pid, system, prompt, params)
+                send = {k: v for k, v in params.items() if k != "image_sha256"}
+                if imgs:
+                    send["images"] = [(mime, base64.b64encode(b).decode("ascii")) for mime, b in imgs]
+                out = await self.call(pid, system, prompt, send)
             except Exception:
                 self.budget.record(role=role, model=model, usage=Usage(), ok=False,
                                    latency_ms=int((self.clock() - t0) * 1000), now=now)

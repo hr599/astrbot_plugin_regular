@@ -56,6 +56,7 @@ class Msg:
     media: list[str] = field(default_factory=list)
     mentions_other: bool = False  # @s someone (not 阿灯); only used to undo label sampling
     name: str = ""  # the sender's group nickname, as model prompts show speakers (never the QQ id)
+    captions: list = field(default_factory=list)  # one per photo, in order; None = not described (core/captions)
 
 
 @dataclass
@@ -80,8 +81,22 @@ def merged_msg(ms: list[Msg]) -> Msg:
         reply_to_bot=any(m.reply_to_bot for m in ms), poke_bot=any(m.poke_bot for m in ms),
         is_bot=last.is_bot, from_bot=last.from_bot, scene=last.scene,
         media=[x for m in ms for x in (m.media or [])], mentions_other=any(m.mentions_other for m in ms),
-        name=last.name,  # captions too, once #34 (Msg.captions) is merged
+        name=last.name,
+        captions=merged_captions(ms),  # PR #34 review: photo, then a line about it
     )
+
+
+def merged_captions(ms: list[Msg]) -> list:
+    """The turn's captions, one slot per [图片] in the joined text, in order, so each
+    stays on its own photo even when one in the middle wasn't described."""
+    out: list = []
+    for m in ms:
+        if not m.text:
+            continue
+        n = m.text.count("[图片]")
+        caps = list(m.captions or [])[:n]
+        out += caps + [None] * (n - len(caps))
+    return out if any(out) else []
 
 
 _DIGITS = re.compile(r"\d{5,12}")

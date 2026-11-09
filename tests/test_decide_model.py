@@ -264,6 +264,29 @@ class FitTests(unittest.TestCase):
         self.assertTrue(mb.clears(0.59, 0.56))
         self.assertFalse(mb.clears(0.57, 0.56))
 
+    def test_fit_never_picks_cuts_that_reply_far_more_than_the_labels(self):
+        # Nov 9: cuts 5/2 scored best on balanced accuracy by replying to most moments
+        import bench.model_bench as mb
+
+        def ev_for(ba, pred_reply):  # 100 dev labels, 30 of them reply
+            n_reply = round(pred_reply * 100)
+            conf = {"quiet": {"quiet": 60 - max(0, n_reply - 30), "react": 0, "reply": max(0, n_reply - 30)},
+                    "react": {"quiet": 10, "react": 0, "reply": 0},
+                    "reply": {"quiet": 30 - min(30, n_reply), "react": 0, "reply": min(30, n_reply)}}
+            return {"dev": {"balanced_accuracy": ba, "confusion": conf}, "explicit_missed": 0, "bot_loop_breaks": 0}
+        table = {(5, 5): ev_for(0.40, 0.10), (5, 2): ev_for(0.60, 0.70), (5, 4): ev_for(0.45, 0.35)}
+        state = {}
+        real_apply, real_eval = mb.apply_answers, mb.evaluate
+        mb.apply_answers = lambda runs, jobs, answers, cuts=dm.DEFAULT_THRESHOLDS: state.update(cuts=cuts)
+        mb.evaluate = lambda runs: table.get(state["cuts"], ev_for(0.30, 0.10))
+        try:
+            cuts, ev = mb.fit([], [], [])
+        finally:
+            mb.apply_answers, mb.evaluate = real_apply, real_eval
+        self.assertEqual(cuts, (5, 4))  # 5/2 scores higher but replies 70% vs 30% labelled
+        pred, labelled = mb.reply_rates(ev)
+        self.assertLessEqual(pred, labelled + mb.REPLY_SLACK)
+
     def test_fit_ignores_reply_share(self):
         # the model judges only labelled moments, so the replay's reply share is
         # mostly the rules': it must not steer the cuts (first scores run, Nov 9)
