@@ -145,6 +145,29 @@ class Review38Tests(unittest.TestCase):
                 self.assertIn(SAD, w.dms[0][1])
                 self.assertEqual(len(w.sent), 1)
 
+    def test_a_line_judged_hyperbole_doesnt_settle_a_later_sincere_one(self):
+        # review round 2: a quoted lyric, someone else, then the real thing
+        w = live()
+
+        def by_target():  # judges the line marked → in the prompt just sent
+            target = w.checks[-1].split("→ ", 1)[1].split("\n", 1)[0]
+            return '{"sincere": false}' if "歌词" in target else '{"sincere": true}'
+        w.sincere = by_target
+        run(w, (1, "歌词里那句我不想活了真难听", "20002", "小王"),
+            (2, "这首歌我也听过", "30003", "小李"),
+            (3, "说真的，我真的撑不下去了", "20002", "小王"))
+        self.assertEqual(len(w.dms), 1)
+        self.assertIn("说真的", w.dms[0][1])
+        self.assertGreaterEqual(len(w.sent), 1)
+
+    def test_all_hyperbole_turns_off_the_crisis_rule(self):
+        w = live()
+        w.sincere = '{"sincere": false}'
+        run(w, (1, "歌词里那句我不想活了", "20002", "小王"), (2, "这首歌好丧", "30003", "小李"),
+            (3, "另一句撑不下去也是歌词", "20002", "小王"))
+        self.assertEqual(w.dms, [])
+        self.assertEqual(w.traces()[-1][1]["crisis"], "not")
+
     def test_a_pause_stops_the_dm(self):
         for when in ("waiting", "checking"):
             with self.subTest(when=when):

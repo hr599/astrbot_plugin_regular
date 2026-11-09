@@ -199,20 +199,27 @@ class Speaker:
         # every message of the turn, not only the target: in an A-B-A turn the
         # target is A's last line and the earlier one sits in the context (PR #38 review)
         parts = [x for x in ctx if x.msg_id in used] + [m]
-        hit = next((x for x in parts if x.kind == "message" and not x.from_bot
-                    and (lambda g: g.crisis_cue and not g.crisis_joking)(signals(x.text or ""))), None)
-        if hit is not None:
-            before = [x for x in ctx + [m] if x.msg_id != hit.msg_id and x.ts <= hit.ts]
-            verdict = await crisis.check(self.client, hit, before, now, alive=still_on)
+        candidates = [x for x in parts if x.kind == "message" and not x.from_bot
+                      and (lambda g: g.crisis_cue and not g.crisis_joking)(signals(x.text or ""))]
+        # each candidate is judged on its own, latest first: one line judged hyperbole
+        # (a quoted lyric) never settles a later sincere one; only if every candidate is
+        # "not" does the turn lose the crisis rule (PR #38 review)
+        hit = None
+        for cand in reversed(candidates):
+            before = [x for x in ctx + [m] if x.msg_id != cand.msg_id and x.ts <= cand.ts]
+            verdict = await crisis.check(self.client, cand, before, now, alive=still_on)
             if not still_on():
                 self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "changed during the crisis check",
                                                                "version": VERSION})
                 return
-            if verdict == "not":
-                from .decide_rules import load_params
-                params = {**(params if params is not None else load_params()), "_not_sincere": True}
-            elif not self._paused(scope_id):  # sincere, or couldn't tell: care, and tell the owner
-                await self._crisis_dm(scope_id, hit, now, still_valid)
+            if verdict != "not":
+                hit = cand
+                break
+        if candidates and hit is None:  # every candidate was hyperbole
+            from .decide_rules import load_params
+            params = {**(params if params is not None else load_params()), "_not_sincere": True}
+        elif hit is not None and not self._paused(scope_id):  # sincere, or couldn't tell
+            await self._crisis_dm(scope_id, hit, now, still_valid)
         d = decide_m2(m, ctx, now, aliases=self.p.aliases, state=st, params=params)
         if verdict in ("sincere", "unknown") and d.action != "reply":
             # the crisis words were earlier in the turn (A-B-A): decide only read the last
