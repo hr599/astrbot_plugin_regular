@@ -13,3 +13,14 @@ async def react_group_msg(context, platform_id: str, native_msg_id: str, emoji_i
         raise RuntimeError(f"platform {platform_id!r} not found")
     return await inst.get_client().call_action(
         "set_msg_emoji_like", message_id=int(native_msg_id), emoji_id=str(emoji_id))
+
+
+async def send_private_text(context, platform_id: str, user_id: str, text: str):
+    """One plain-text private message (the owner's crisis DM). Text only."""
+    if not str(user_id).isdigit():
+        raise ValueError("user id must be a number")
+    inst = context.get_platform_inst(platform_id)
+    if inst is None:
+        raise RuntimeError(f"platform {platform_id!r} not found")
+    return await inst.get_client().call_action(
+        "send_private_msg", user_id=int(user_id), message=[{"type": "text", "data": {"text": text}}])

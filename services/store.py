@@ -664,8 +664,9 @@ class Store:
             self.cache_gen += 1
             # traces that name them as a reactor or as the one answered (task D signals)
             db.execute("""DELETE FROM traces WHERE json_valid(reasons) AND
-                          (json_extract(reasons, '$.actor')=? OR json_extract(reasons, '$.signals.answers')=?)""",
-                       (pid, pid))
+                          (json_extract(reasons, '$.actor')=? OR json_extract(reasons, '$.signals.answers')=?
+                           OR (ended_at='crisis_dm' AND CAST(json_extract(reasons, '$.person') AS TEXT)=?))""",
+                       (pid, pid, str(pid)))
             # episodes summarise a conversation as a whole: drop the ones they were in
             eps = [r[0] for r in db.execute(
                 "SELECT episode_id FROM episodes, json_each(episodes.participants) WHERE json_each.value=?",

@@ -395,9 +395,9 @@ then show `[图片：一碗烤冷面，上面撒了葱花]` instead of `[图片]
 - **Status:** `/reg status` shows `captions` (on/off, and counts since start:
   described, reused, skipped, failed).
 
-Live decide doesn't see a photo's own description yet: it arrives a few seconds
-after the message. The surrounding context does, and live replies (M2c part 2)
-will wait for it.
+A description arrives a few seconds after the photo. A live turn that includes a
+photo still being described waits for it, up to 6 seconds (only while one is
+actually in progress), so 阿灯 doesn't answer a photo he can't see.
 
 ## Live replies (M2c part 2)
 
@@ -443,6 +443,23 @@ to change them. Every turn leaves a trace (`ended_at="live"`: the rule, outcome,
 kinds, cost; no text).
 
 To stop him at any time: `/reg send off`, or `/reg pause <group>`.
+
+## Crisis moments
+
+When a message sounds like someone may want to hurt themselves (不想活, 撑不下去…,
+not an obvious joke like "这作业要我命 哈哈"), the decide model first checks
+whether it's sincere or hyperbole (`core/crisis.py`). Then:
+- **Sincere:** 阿灯 replies with care in the group (the guardrails say how:
+  gently, no lecture, people they trust, the 12356 line), and **you get a private
+  DM** saying who, in which group, and what they said (shortened), so you can check
+  in as a friend. At most once per person per day.
+- **Not sincere:** an ordinary message; the usual rules decide.
+- **The check couldn't run** (model error, budget, no provider): treated as
+  sincere. A kind message too many is better than one too few.
+
+The DM goes to `crisis_dm_to` in the plugin config, or, if that's empty, to
+AstrBot's `admins_id`. It works with `send_mode` dry or on (not off). The trace
+for it holds a person id and no text, and `/reg forget` removes it.
 
 ## Learning from the group (automatic)
 

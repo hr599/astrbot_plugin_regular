@@ -134,7 +134,8 @@ def decide_m2(m: Msg, context: list[Msg], now: int, *, aliases: tuple[str, ...] 
     reasons["rhythm"] = state_now
 
     sig = signals(text)
-    if sig.crisis_cue and not sig.crisis_joking:
+    if sig.crisis_cue and not sig.crisis_joking and not P.get("_not_sincere"):
+        # (_not_sincere: the live crisis check judged this one hyperbole, core/crisis)
         # design doc: a crisis signal gets a caring reply, never a joke or a deflection;
         # this overrides rhythm, argument, serious mode, the share cap, and a name-only
         # address that would otherwise just react (PR #26 review). Direct addresses
