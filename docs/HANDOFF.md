@@ -55,7 +55,7 @@ chip in, and always answer when someone talks to it directly.
   | role | model | thinking |
   |---|---|---|
   | decide | deepseek-flash | off |
-  | reply | deepseek-flash | off |
+  | reply | deepseek-flash (final, Nov 9) | off |
   | caption | deepseek-flash | off |
   | dream | deepseek-v4-pro | high |
   | judge | gpt-6.1-terra | low |
@@ -122,7 +122,7 @@ M4 social → M5 learning loop.
 4. **After going live:** a numbers-only check of the first days (replies per day, engaged vs ignored, missed questions, cost). Then retune with the automatic labels, and add emoji reactions, the crisis DM to the owner, and waiting for captions.
 5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
 6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
-7. **M2d:** a deepseek-flash vs deepseek-v4-pro reply bake-off, then a blind test.
+7. **M2d bake-off: dropped (owner's call, Nov 9).** deepseek-flash is good enough for replies, judging by the real drafts. To revisit, point `provider_reply` at a v4-pro provider and rerun `/reg bench compose`. The blind test (can the group tell him from a member?) is optional, after a while live.
 8. **Later:** M3 memory (the dream pass's model half), M4 tone and stickers, M5 learning loop.
 
 ## Pointers
