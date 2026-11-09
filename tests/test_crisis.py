@@ -260,3 +260,18 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Review39Tests(unittest.TestCase):
+    """PR #39 review: with #38 merged, a crisis turn whose last line merely names him
+    got rule "addressed", so the unprompted cap blocked the caring reply."""
+
+    def test_a_full_unprompted_cap_never_blocks_a_crisis_reply(self):
+        w = live()
+        w.speaker._unprompted[SCOPE] = [E] * 6  # six ordinary chime-ins this hour: the cap is full
+        run(w, (1, SAD, "20002", "小王"), (2, "怎么了", "30003", "小李"), (3, "阿灯，你在吗", "20002", "小王"))
+        self.assertEqual((len(w.dms), len(w.sent)), (1, 1))
+        info = [i for d, i in w.traces() if d == "reply"][-1]
+        self.assertEqual(info.get("crisis"), "sincere")
+        self.assertNotIn("refused", info)
+        self.assertEqual(len(w.speaker._unprompted[SCOPE]), 6)  # and it doesn't use up the allowance

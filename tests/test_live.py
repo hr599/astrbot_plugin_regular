@@ -252,6 +252,31 @@ class ChattinessTests(unittest.TestCase):
         rules = [i.get("rule") for d, i in w.traces() if d == "reply"]
         self.assertEqual(rules, ["direct", "addressed", "direct", "addressed"])
 
+    def test_an_at_merged_with_a_plain_line_still_restarts_it(self):
+        """PR #39 review (non-blocking): @ then a plain line, merged into one turn."""
+        async def go():
+            w = Live(["嗯"] * 20)
+            w.post(1, at_bot("在吗"), dt=0)
+            await w.settle()
+            for i, t in enumerate(["今天好累", "刚下课"]):  # one follow-up: the chain is used up
+                w.now = E + 30 * (i + 1)
+                w.post(2 + i, t, dt=30 * (i + 1))
+                await w.settle()
+            w.now = E + 100
+            w.post(5, at_bot("你呢"), dt=100)
+            w.post(6, "我是说晚上", dt=100)  # same turn as the @
+            await w.settle()
+            for i, t in enumerate(["我也是", "唉"]):
+                w.now = E + 130 + 30 * i
+                w.post(7 + i, t, dt=130 + 30 * i)
+                await w.settle()
+            return w
+        w = asyncio.run(go())
+        ids = [r[0] for r in w.store.db.execute(
+            "SELECT msg_id FROM traces WHERE ended_at='live' AND decision='reply' ORDER BY trace_id")]
+        ids = [int(x.rsplit(":", 1)[1]) for x in ids]
+        self.assertEqual(ids, [1, 2, 6, 7])  # the merged @ turn, then one follow-up again
+
     def test_unprompted_replies_have_an_hourly_cap(self):
         import core.decide_rules as dr
         async def go():

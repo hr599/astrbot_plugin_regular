@@ -115,6 +115,7 @@ class LimitState:
         self.bot_answered: str | None = None  # the person 阿灯 last spoke right after
         self.follow_chain = 0  # follow-up replies in a row to bot_answered, since their last direct address
         self.others_since_bot: set[str] = set()  # people who spoke since 阿灯 did
+        self.direct_since_bot: set[str] = set()  # people who addressed him since 阿灯 spoke
         self.humans: deque = deque(maxlen=3)  # (ts, sender) of the last human messages
         self.heat, self.heat_ts = 0.0, None
         self.serious_until = 0
@@ -132,6 +133,7 @@ class LimitState:
         if is_direct(m):
             q = self.directs.setdefault(m.sender, deque())
             q.append(m.ts)
+            self.direct_since_bot.add(m.sender)
             while q and m.ts - q[0] > SPAM_WINDOW_S:
                 q.popleft()
         if m.kind == "message":
@@ -145,11 +147,15 @@ class LimitState:
                 # a reply to a direct address, or to someone new, starts a fresh chain;
                 # answering the same person's follow-up adds one (live, Nov 9: each reply
                 # reopened the window, so he answered every line someone sent after an @)
-                if self.prev is None or is_direct(self.prev) or self.bot_answered != was:
+                # (any direct address since he last spoke counts: an @ and a plain line
+                # merged into one turn leave only the plain one as prev, PR #39 review)
+                if (self.prev is None or is_direct(self.prev) or self.bot_answered != was
+                        or self.bot_answered in self.direct_since_bot):
                     self.follow_chain = 0
                 else:
                     self.follow_chain += 1
                 self.others_since_bot = set()
+                self.direct_since_bot = set()
         elif is_human(m):
             if self.bot_answered is not None and m.sender != self.bot_answered:
                 self.others_since_bot.add(m.sender)

@@ -232,6 +232,10 @@ class Speaker:
             d = replace(d, action="reply", reasons={**d.reasons, "rule": "crisis"})
         rule = d.reasons.get("rule")
         direct = d.address_kind == "explicit"
+        # one test for the cap and its bookkeeping: the turn's real crisis verdict, not
+        # the rule's name; a crisis line earlier in the turn can end in a plain "阿灯，在吗"
+        # that decide calls "addressed" (PR #39 review)
+        capped = not direct and verdict not in ("sincere", "unknown") and rule != "crisis"
         info: dict[str, Any] = {"action": d.action, "rule": rule, "direct": direct, "version": VERSION}
         if verdict is not None:
             info["crisis"] = verdict
@@ -241,7 +245,7 @@ class Speaker:
         if d.action != "reply":
             self._trace(scope_id, m.msg_id, d.action, info)
             return
-        if not direct and d.reasons.get("rule") != "crisis":
+        if capped:
             # a safety net under the rules: so many unprompted replies an hour, then quiet
             # until someone addresses him (live, Nov 9: he hit the 20-message cap quickly)
             cap = int((params or {}).get("unprompted_per_hour", UNPROMPTED_PER_HOUR))
@@ -287,7 +291,7 @@ class Speaker:
             pass
         prep.job.still_valid = still_valid  # and before every part it sends
         info["parts"] = len(prep.job.parts)
-        if not direct and rule != "crisis":
+        if capped:
             self._unprompted.setdefault(scope_id, []).append(now)
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
