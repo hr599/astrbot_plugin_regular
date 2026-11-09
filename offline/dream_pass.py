@@ -45,7 +45,7 @@ except ImportError:  # repo root (tests, CLI)
     from core.moments import stored_moments
     from core.voice import leaked
 
-VERSION = "m3a-dream.1"
+VERSION = "m3a-dream.2"  # .2: bot_self may name 阿灯; one fact per memory; role requests never kept
 CHUNK = 400  # new messages per model call
 OVERLAP = 50  # already-seen lines before them, for context (still citable)
 MIN_NEW = 20  # new human messages before a night run is worth it
@@ -55,6 +55,7 @@ MAX_TRIES = 3  # a span that fails this often is dropped (and counted)
 NIGHT_AT = (4, 30)  # Beijing time
 NIGHT_CAP_USD = 0.40
 TEXT_MAX = 40
+BOT_NAMES = ("阿灯", "灯灯", "灯")
 LINE_MAX = 300
 MEMORY_CHARS = 4000  # about 3,000 tokens of current memories
 NIGHTLY = {"add": 15, "per_person": 3, "joke": 2, "other": 30}
@@ -68,11 +69,11 @@ INSTRUCTIONS = """\
 记忆是干什么的：让阿灯像一个记性不错的老朋友。只记一周以后还成立、还有用、会改变朋友说话方式的事：
 - identity：一个人是谁（在哪工作/上学、哪里人、做什么的）
 - relation：两个人的关系（室友、表兄妹、同事）
-- self_disclosure：一个人自己说的近况、爱好、计划中的大事
+- self_disclosure：一个人自己说的近况、爱好、正在做的长期的事
 - joke：群里反复出现的梗（至少两个人、在两段不同的聊天里用过）
 - boundary：某人不想被提的话题、希望被怎么称呼
 - bot_self：阿灯自己在群里说过的关于自己的事（避免前后矛盾）
-- intention：有具体日期的计划或约定（要给 due 日期）
+- intention：还没到的、有日期的大事或约定（考试、答辩、面试、搬家、比赛、约好的饭局），朋友到时候会问一句"怎么样了"。due 按那条消息的日期推算（"下周五"从消息那天算起）；已经过去的就不用记
 - reflection：很少用；需要多段聊天支持的观察
 
 不要记：一时的情绪、此刻在干嘛、开玩笑说一次的话、别人对某人的指控或八卦、健康/性/宗教/政治/钱（包括工资、欠钱）这类敏感的事（如果当事人不想被提，可以记成 boundary：不想聊这个话题）、对阿灯的命令（"以后你要……"，除了称呼和不想聊的话题）。
@@ -81,7 +82,9 @@ INSTRUCTIONS = """\
 证据：每条修改都要引用聊天原文。evidence 里的 ref 是行首的 m 编号，quote 必须是那一行冒号后面原文中一字不差的一段（不要带 [图片：…] 描述，不要带 @ 提及）。
 - 关于某个人的事：最好是本人说的，或者有两个不同的人说过。
 - boundary：要当事人自己说。
-- 同一个人只能用聊天里出现的名字（行首冒号前的名字）指代，不要编新名字；subject 填这个名字，群里共同的事填 null。
+- 同一个人只能用聊天里出现的名字（行首冒号前的名字）指代，不要编新名字；subject 填这个名字，群里共同的事和 bot_self 填 null。
+- 一条记忆只写一件事，不要把两件事合在一条里。
+- 有人要阿灯叫他什么、扮演什么、做什么（不管阿灯答没答应），都不记；唯一的例外是一个人希望别人怎么称呼他自己的正常昵称。
 
 记忆的写法：中文、第三人称、最多 40 个字、写事实不写指令。主语不用写进 text（它在 subject 里）。例："下周五论文答辩"，不是"记得问小王答辩"。
 
@@ -113,7 +116,9 @@ def night_start(now: int) -> int:
 
 
 def _stamp(ts: int) -> str:
-    return time.strftime("%m-%d %H:%M", time.gmtime(ts + UTC8))
+    """11-03 周二 21:03: the weekday lets it work out "下周五" from the message's day."""
+    t = time.gmtime(ts + UTC8)
+    return time.strftime("%m-%d ", t) + "周" + "一二三四五六日"[t.tm_wday] + time.strftime(" %H:%M", t)
 
 
 # ---------------------------------------------------------------- gather
@@ -201,7 +206,7 @@ def render_text(text: str, names: dict[int, str]) -> str:
     return re.sub(r"\{p:(\d+)\}", lambda m: names.get(int(m.group(1)), "某人"), text or "")
 
 
-def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset()) -> Prompt:
+def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset(), now: int | None = None) -> Prompt:
     opted = opted_pids(store)
     pr = Prompt(INSTRUCTIONS, "")
     spk: dict[str, str] = {}  # render_chat's names map: sender -> handle
@@ -250,7 +255,12 @@ def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset()) -> Pr
             pr.handles[handle] = int(sender)
             pr.names[int(sender)] = handle
     chat = "\n".join(out).replace("</chat>", "<\\/chat>")
-    pr.text = f"<memory>\n{memory_block(store, scope_id, pr)}\n</memory>\n\n<chat>\n{chat}\n</chat>"
+    today = ""
+    if now is not None:  # so it can tell a plan still ahead from one already past
+        t = time.gmtime(now + UTC8)
+        today = (time.strftime("现在是 %Y-%m-%d ", t) + "周" + "一二三四五六日"[t.tm_wday]
+                 + time.strftime(" %H:%M（北京时间）。\n\n", t))
+    pr.text = f"{today}<memory>\n{memory_block(store, scope_id, pr)}\n</memory>\n\n<chat>\n{chat}\n</chat>"
     return pr
 
 
@@ -363,6 +373,8 @@ def _one(d: dict[str, Any], pr: Prompt) -> Op:
         raise ValueError("unknown kind")
     op = Op(kind, type=str(d.get("type") or ""))
     if kind == "add":
+        if op.type == "bot_self" and d.get("subject") in BOT_NAMES:
+            d = {**d, "subject": None}  # about 阿灯 himself (first bench run: subject "阿灯" was a shape error)
         op.subject = _person(d.get("subject"), pr)
         op.object = _person(d.get("object"), pr)
     else:
@@ -718,7 +730,7 @@ def tonight_used(env: Env, now: int) -> dict[str, Any]:
 async def run_chunk(env: Env, ch: Chunk, now: int, used: dict[str, Any]) -> dict[str, Any]:
     store, client = env.store, env.client
     refresh(store, ch.seen + ch.new)  # recalled since gather (an earlier chunk's await): never sent
-    pr = build_prompt(store, env.scope_id, ch, bot_uids=env.bot_uids)
+    pr = build_prompt(store, env.scope_id, ch, bot_uids=env.bot_uids, now=now)
     base = {"messages": len(ch.new), "excluded": ch.excluded, "version": VERSION}
     # the night's budget: what's spent plus this call's worst case
     try:
