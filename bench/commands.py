@@ -28,7 +28,8 @@ def summary_line(name: str, m: dict[str, Any]) -> str:
         loop = "✓" if m["bot_loop_breaks"] == 0 else f"✗ {m['bot_loop_breaks']} 次"
         s += f"\n  机器人互刷不接话 {loop}；其余门槛（私信、站队、泄露…）等 M2 判"
     if m["labeled"]:
-        s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}）：判断对象 准 {_pct(m['addressed_precision'])} / "
+        s += (f"\n  已标 {m['labeled']}（调参用 {m['labeled_dev']}"
+              + (f"，其中 {m['labeled_auto']} 条来自群友的反应" if m.get("labeled_auto") else "") + f"）：判断对象 准 {_pct(m['addressed_precision'])} / "
               f"全 {_pct(m['addressed_recall'])}，动作一致 {_pct(m['action_agreement'])}，平衡准确率 {_pct(m.get('balanced_accuracy'))}")
         imp = m.get("implied")
         if imp:
@@ -135,7 +136,7 @@ def latest_summary(data_dir: Path) -> dict[str, Any] | None:
     if not runs:  # a /reg bench model or compose run alone still shows up
         return {"model": model, "compose": compose} if model or compose else None
     d = json.loads(runs[-1].read_text(encoding="utf-8"))
-    keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "would_speak", "bot_share",
+    keep = ("policy", "moments", "pokes", "labeled", "labeled_dev", "labeled_auto", "would_speak", "bot_share",
             "explicit", "explicit_missed", "addressed_precision", "addressed_recall",
             "action_agreement", "balanced_accuracy", "decided_by", "speak_precision", "speak_recall", "confusion", "held_out", "tags", "implied",
             "expects", "bot_loop_breaks")
