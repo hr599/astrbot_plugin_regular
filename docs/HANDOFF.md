@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 afternoon: #33 merged; #34 (captions), #35 (format + fit fixes) and #36 (live replies + automatic labels) in review; #37 (emoji reactions) a draft on top of #36.
+Last updated: 2026-11-09 afternoon: #34 (captions) and #35 merged; #36 (live replies + automatic labels, review fixes in) and #37 (reactions, draft on #36) in review.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -117,8 +117,8 @@ M4 social → M5 learning loop.
 
 ## Next steps (in order)
 
-1. **Owner:** review/merge #34 (captions; mark it "Ready for review" on GitHub, since REST can't), #35 and #36; then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Watch `/reg status` (`mode`, `captions`, `learning`). `/reg label recheck` when there's time.
-2. **Image captions: #34, in review.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
+1. **Owner:** review/merge #36, then #37 (mark it "Ready for review" after #36); then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Watch `/reg status` (`mode`, `captions`, `learning`). `/reg label recheck` when there's time.
+2. **Image captions: #34, merged.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
 4. **To finish M2** (owner, Nov 9: the bake-off is dropped): the crisis DM to the owner with a sincerity check, and live replies waiting for a photo's caption. Reactions are in #37.
 5. **After going live:** a numbers-only check of the first days (replies and reactions per day, engaged vs ignored, missed questions, cost), then retune with the automatic labels.
