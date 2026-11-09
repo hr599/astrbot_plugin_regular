@@ -30,7 +30,9 @@ from .compose import compose
 from .decide_model import render_chat
 from .decide import Msg, merged_msg
 from .decide_rules import decide_m2, rhythm_state
+from . import crisis
 from .moments import stored_moments
+from .signals import compute as signals
 from . import reactions as rx
 
 PAUSE_S = 4.0
@@ -38,6 +40,7 @@ TURN_MAX_S = 15.0
 CONTEXT = 30
 LOOKBACK_S = 6 * 3600  # how far back context is read
 P90_EVERY_S = 3600
+CAPTION_WAIT_S = 6.0  # how long a turn waits for a photo still being described
 CANNED = ["今天话说太多了 嗓子哑了 晚点聊", "脑子有点糊 晚点再回你", "等我缓缓 晚点说"]
 VERSION = "m2c-live.1"
 
@@ -55,9 +58,11 @@ class Speaker:
                  clock: Callable[[], float] = time.time, sleep=asyncio.sleep,
                  pause_s: float = PAUSE_S, turn_max_s: float = TURN_MAX_S, rng: random.Random | None = None,
                  react: Callable[[str, str, str], Awaitable[Any]] | None = None,
-                 reaction_rules: dict[str, Any] | None = None):
+                 reaction_rules: dict[str, Any] | None = None,
+                 notify: Callable[[str, str], Awaitable[Any]] | None = None):
         """react(scope_id, msg_id, emoji_id): puts an emoji reaction on a stored
-        message (main.py: OneBot set_msg_emoji_like). None: reactions are traced only."""
+        message (main.py: OneBot set_msg_emoji_like). None: reactions are traced only.
+        notify(scope_id, text): a private DM to the owner (crisis moments)."""
         self.p = pipeline
         self.client = client
         self.persona = persona
@@ -72,6 +77,8 @@ class Speaker:
         self._p90: dict[str, tuple[float, int | None]] = {}
         self.tasks: set[asyncio.Task] = set()
         self.react = react
+        self.notify = notify
+        self.captioning: set[str] = set()  # msg ids whose photos are being described now (main.py)
         self.rx_rules = reaction_rules if reaction_rules is not None else rx.load_rules()
         self.rx_cap = rx.Cap(int(self.rx_rules.get("per_hour", 20)))
 
@@ -160,6 +167,16 @@ class Speaker:
         m, ctx, used = self._moments(scope_id, turn)
         if m is None:
             return  # recalled or forgotten during the pause
+        if any(i in self.captioning for i in used):
+            # a photo in this turn is still being described: give it a few seconds, so he
+            # doesn't answer a photo he can't see (only while one is actually in progress)
+            waited = 0.0
+            while any(i in self.captioning for i in used) and waited < CAPTION_WAIT_S:
+                await self.sleep(0.25)
+                waited += 0.25
+            m, ctx, used = self._moments(scope_id, turn)
+            if m is None:
+                return
 
         def still_valid() -> bool:
             if getattr(store, "cache_gen", 0) != gen:
@@ -175,10 +192,44 @@ class Speaker:
         now = int(self.clock())
         st = self.p._limit_state(scope_id, now, m.msg_id)
         params = self.p.params
+        verdict = None
+        if self._paused(scope_id):
+            self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "group paused", "version": VERSION})
+            return
+        # every message of the turn, not only the target: in an A-B-A turn the
+        # target is A's last line and the earlier one sits in the context (PR #38 review)
+        parts = [x for x in ctx if x.msg_id in used] + [m]
+        candidates = [x for x in parts if x.kind == "message" and not x.from_bot
+                      and (lambda g: g.crisis_cue and not g.crisis_joking)(signals(x.text or ""))]
+        # each candidate is judged on its own, latest first: one line judged hyperbole
+        # (a quoted lyric) never settles a later sincere one; only if every candidate is
+        # "not" does the turn lose the crisis rule (PR #38 review)
+        hit = None
+        for cand in reversed(candidates):
+            before = [x for x in ctx + [m] if x.msg_id != cand.msg_id and x.ts <= cand.ts]
+            verdict = await crisis.check(self.client, cand, before, now, alive=still_on)
+            if not still_on():
+                self._trace(scope_id, m.msg_id, "cancelled", {"cancelled": "changed during the crisis check",
+                                                               "version": VERSION})
+                return
+            if verdict != "not":
+                hit = cand
+                break
+        if candidates and hit is None:  # every candidate was hyperbole
+            from .decide_rules import load_params
+            params = {**(params if params is not None else load_params()), "_not_sincere": True}
+        elif hit is not None and not self._paused(scope_id):  # sincere, or couldn't tell
+            await self._crisis_dm(scope_id, hit, now, still_valid)
         d = decide_m2(m, ctx, now, aliases=self.p.aliases, state=st, params=params)
+        if verdict in ("sincere", "unknown") and d.action != "reply":
+            # the crisis words were earlier in the turn (A-B-A): decide only read the last
+            # line, but the turn still gets a caring reply (design doc: never left alone)
+            d = replace(d, action="reply", reasons={**d.reasons, "rule": "crisis"})
         rule = d.reasons.get("rule")
         direct = d.address_kind == "explicit"
         info: dict[str, Any] = {"action": d.action, "rule": rule, "direct": direct, "version": VERSION}
+        if verdict is not None:
+            info["crisis"] = verdict
         if d.action == "react":
             await self._react(scope_id, m, info, now, still_on)
             return
@@ -223,6 +274,26 @@ class Speaker:
         info["parts"] = len(prep.job.parts)
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
+
+    def _paused(self, scope_id: str) -> bool:
+        return scope_id.rsplit(":", 1)[-1] in self.p.gate_cfg.paused_groups
+
+    async def _crisis_dm(self, scope_id: str, m: Msg, now: int, still_valid) -> None:
+        """A private DM to the owner, at most once per person per day. Nothing is
+        recorded if the message was recalled or the person forgotten while it was
+        being sent (PR #38 review): a forgotten person's crisis is never re-saved."""
+        info: dict[str, Any] = {"version": VERSION}
+        if crisis.already_today(self.p.store, scope_id, m.sender, now):
+            return
+        if self.notify is None:
+            info["error"] = "no owner to notify"
+        else:
+            try:
+                await self.notify(scope_id, crisis.dm_text(scope_id.rsplit(":", 1)[-1], m, now))
+            except Exception as e:  # noqa: BLE001 - the group reply still goes out
+                info["error"] = type(e).__name__
+        if still_valid():
+            crisis.record_dm(self.p.store, scope_id, m.msg_id, m.sender, now, info, self.p.harness_version)
 
     async def _react(self, scope_id: str, m: Msg, info: dict[str, Any], now: int, still_on) -> None:
         """An emoji on the turn's last message. No model call; a cap per group per

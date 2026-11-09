@@ -128,7 +128,8 @@ class LiveReactionTests(unittest.TestCase):
             return w
         paused = asyncio.run(go(True))
         self.assertEqual(paused.reacted, [])
-        self.assertEqual(paused.traces()[-1][1]["refused"], "group paused")
+        decision, info = paused.traces()[-1]  # the whole turn stops at a pause (PR #38), before the react step
+        self.assertEqual((decision, info.get("cancelled") or info.get("refused")), ("cancelled", "group paused"))
         control = asyncio.run(go(False))
         self.assertEqual(len(control.reacted), 1)
 
