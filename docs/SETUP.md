@@ -437,6 +437,13 @@ kinds, cost; no text).
 
 To stop him at any time: `/reg send off`, or `/reg pause <group>`.
 
+**The hourly cap.** Each group gets at most `send_cap_per_hour` messages an hour
+(default 20; every part of a split reply counts). `/reg send cap N` changes it
+from the admin DM (saved to the config, at most 60: a low send rate also keeps
+the alt account clear of QQ's risk controls). `/reg send reset [group]` clears
+the current hour's count, for when the group is in a chatty mood; a restart
+within the hour won't count the old messages again.
+
 ## Learning from the group (automatic)
 
 Every 5 minutes the plugin looks at moments at least 5 minutes old and labels

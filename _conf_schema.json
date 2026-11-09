@@ -56,6 +56,12 @@
     "default": "off",
     "hint": "off = 不发；dry = 只记录会发什么、什么时候发，不真发；on = 真发。也可以私聊 /reg send off|dry|on 切换。M2 之前只有 /reg say 会发。"
   },
+  "send_cap_per_hour": {
+    "description": "每个群每小时最多发几条",
+    "type": "int",
+    "default": 20,
+    "hint": "包括分段发出的每一条。最多 60：发得太多，QQ 号更容易被风控。也可以私聊 /reg send cap N 修改，/reg send reset 清零本小时的计数。"
+  },
   "caption_images": {
     "description": "给群里的照片写描述",
     "type": "bool",
