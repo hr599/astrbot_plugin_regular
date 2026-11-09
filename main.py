@@ -125,6 +125,7 @@ class Regular(Star):
             logger.warning(f"[regular] dream_mode {self.dream_mode!r} isn't available yet (M3a): using dry")
             self.dream_mode = "dry"
         self._dreaming = False
+        self._dream_gen = 0  # bumped by every /reg dream off|dry: a batch started before it stops
         self._dreamt: set[tuple[str, int]] = set()  # (scope, night) done this process
         self.admin.dreamer = DreamAdmin(
             self.store, mode=lambda: self.dream_mode, save_mode=self._save_dream_mode, run_now=self._dream_now,
@@ -357,13 +358,19 @@ class Regular(Star):
         except Exception:
             return frozenset()
 
-    def _dream_env(self, scope_id: str, trigger: str = "night") -> "dp.Env":
+    def _dream_live(self, gen: int) -> bool:
+        """The batch that took `gen` may go on: no mode change since, and not off. A
+        later off-then-dry doesn't revive it (PR #42 review)."""
+        return self._dream_gen == gen and self.dream_mode != "off"
+
+    def _dream_env(self, scope_id: str, trigger: str = "night", gen: int | None = None) -> "dp.Env":
         gid = scope_id.rsplit(":", 1)[-1]
         mode = self.dream_mode
+        gen = self._dream_gen if gen is None else gen
         return dp.Env(self.store, self.models, scope_id, mode=mode, trigger=trigger,
                       bot_uids=frozenset(self.gate_cfg.bot_uids), admin_uids=self._admin_uids(),
                       persona_core=self.persona.core, report_dir=self.data_dir / "dream",
-                      still_on=lambda: self.dream_mode == mode and gid not in self.gate_cfg.paused_groups,
+                      still_on=lambda: self._dream_live(gen) and gid not in self.gate_cfg.paused_groups,
                       night_cap_usd=self._dream_cap(), usd_to_cny=self.budget.usd_to_cny,
                       min_new=dp.MIN_NEW if trigger == "night" else 1)
 
@@ -371,11 +378,10 @@ class Regular(Star):
         if self._dreaming:
             raise RuntimeError("a dream run is already going")
         self._dreaming = True
+        gen = self._dream_gen
         try:
-            out = {}
-            for sc in scopes:
-                out[sc] = await dp.run_scope(self._dream_env(sc, "now"))
-            return out
+            return await dp.run_batch(scopes, lambda sc: self._dream_env(sc, "now", gen),
+                                      live=lambda: self._dream_live(gen))
         finally:
             self._dreaming = False
 
@@ -397,12 +403,15 @@ class Regular(Star):
         if not todo:
             return
 
+        gen = self._dream_gen
+
         async def go():
             self._dreaming = True
             try:
-                for sc in todo:
-                    self._dreamt.add((sc, night))
-                    s = await dp.run_scope(self._dream_env(sc, "night"))
+                res = await dp.run_batch(todo, lambda sc: self._dream_env(sc, "night", gen),
+                                         live=lambda: self._dream_live(gen),
+                                         on_start=lambda sc: self._dreamt.add((sc, night)))
+                for sc, s in res.items():
                     logger.info(f"[regular] dream {sc.rsplit(':', 1)[-1]}: {s.get('stopped') or 'done'}, "
                                 f"{len(s.get('runs', []))} run(s)")
             except Exception:
@@ -414,6 +423,7 @@ class Regular(Star):
         task.add_done_callback(self._tasks.discard)
 
     def _save_dream_mode(self, mode: str) -> None:
+        self._dream_gen += 1
         self.dream_mode = mode
         self.config["dream_mode"] = mode
         try:

@@ -186,7 +186,7 @@ class Prompt:
     crefs: dict[str, int] = field(default_factory=dict)  # c7 -> claim_id
     names: dict[int, str] = field(default_factory=dict)  # person_id -> handle
     lines: dict[str, str] = field(default_factory=dict)  # msg_id -> rendered line (support check context)
-    prev: dict[str, str] = field(default_factory=dict)  # msg_id -> the line before it
+    prev: dict[str, str] = field(default_factory=dict)  # msg_id -> the message id before it
 
 
 def _clip(t: str) -> str:
@@ -206,14 +206,14 @@ def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset()) -> Pr
     ids: dict[str, str] = {}  # @-number stand-ins
     every = ch.seen + ch.new
     by_id = {m.msg_id: m for m in every}
-    out, prev_line = [], ""
+    out, prev_id = [], ""
     n = 0
 
     def line(m) -> str | None:
-        nonlocal n, prev_line
+        nonlocal n, prev_id
         stamp = _stamp(m.ts)
         if m.from_bot:
-            prev_line = "（另一个机器人说了话）"
+            prev_id = ""
             return f"[{stamp}] （另一个机器人说了话）"
         if not m.is_bot and (m.sender in opted or not m.text):
             return None  # opted out, or recalled
@@ -230,8 +230,8 @@ def build_prompt(store, scope_id: str, ch: Chunk, *, bot_uids=frozenset()) -> Pr
         body = _clip(_hide_ids(with_captions(m.text, m.captions), ids))
         text = f"{who}{tag}：{body}"
         pr.lines[m.msg_id] = text
-        pr.prev[m.msg_id] = prev_line
-        prev_line = text
+        pr.prev[m.msg_id] = prev_id
+        prev_id = m.msg_id
         return f"{ref} [{stamp}] {text}"
 
     if ch.seen:
@@ -303,32 +303,41 @@ def to_ops(obj: Any, pr: Prompt) -> list[Proposal]:
             continue
         try:
             out.append(Proposal(d, _one(d, pr)))
-        except (ValueError, TypeError, KeyError) as e:
-            out.append(Proposal(d, None, str(e)[:120]))
+        except ValueError as e:
+            out.append(Proposal(d, None, str(e)))
+        except Exception:  # noqa: BLE001 - one odd proposal never takes the run down
+            out.append(Proposal(d, None, "unreadable"))
     return out
 
 
+# shape errors name what was wrong, never the content: they're kept in the audit,
+# where /reg forget can't trace a nickname or a quote back to a person (PR #42 review)
 def _person(v, pr: Prompt) -> int | None:
     if v in (None, "", "null"):
         return None
     if not isinstance(v, str) or v not in pr.handles:
-        raise ValueError(f"unknown person {str(v)[:20]!r}")
+        raise ValueError("unknown person")
     return pr.handles[v]
 
 
 def _evs(v, pr: Prompt) -> list[Evidence]:
+    if v in (None, ""):
+        return []
+    if not isinstance(v, list):  # e.g. one {"ref","quote"} without the list around it (PR #42 review)
+        raise ValueError("evidence must be a list")
     out = []
-    for e in v or []:
-        ref = str(e.get("ref", ""))
-        if ref not in pr.refs:
-            raise ValueError(f"unknown message ref {ref[:10]!r}")
-        out.append(Evidence(pr.refs[ref], str(e.get("quote", ""))))
+    for e in v:
+        if not isinstance(e, dict) or not isinstance(e.get("ref"), str) or not isinstance(e.get("quote"), str):
+            raise ValueError("evidence items must be {ref, quote}")
+        if e["ref"] not in pr.refs:
+            raise ValueError("unknown message ref")
+        out.append(Evidence(pr.refs[e["ref"]], e["quote"]))
     return out
 
 
 def _claim(v, pr: Prompt) -> int:
     if not isinstance(v, str) or v not in pr.crefs:
-        raise ValueError(f"unknown memory ref {str(v)[:10]!r}")
+        raise ValueError("unknown memory ref")
     return pr.crefs[v]
 
 
@@ -345,7 +354,7 @@ def tokenize(text: str, pr: Prompt) -> str:
 def _one(d: dict[str, Any], pr: Prompt) -> Op:
     kind = str(d.get("kind", ""))
     if kind not in KINDS:
-        raise ValueError(f"unknown kind {kind[:12]!r}")
+        raise ValueError("unknown kind")
     op = Op(kind, type=str(d.get("type") or ""))
     if kind == "add":
         op.subject = _person(d.get("subject"), pr)
@@ -353,11 +362,15 @@ def _one(d: dict[str, Any], pr: Prompt) -> Op:
     else:
         op.claim_id = _claim(d.get("claim"), pr)
     if kind == "merge":
+        if not isinstance(d.get("merge") or [], list):
+            raise ValueError("merge must be a list")
         op.merge_ids = [_claim(c, pr) for c in (d.get("merge") or [])]
     op.evidence = _evs(d.get("evidence"), pr)
     op.contra = _evs(d.get("contra"), pr)
     if kind in ("add", "revise"):
-        op.text = tokenize(str(d.get("text") or "").strip(), pr)
+        if not isinstance(d.get("text") or "", str):
+            raise ValueError("text must be a string")
+        op.text = tokenize((d.get("text") or "").strip(), pr)
     if d.get("due"):
         due = str(d["due"])
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", due):
@@ -473,7 +486,7 @@ def support_prompt(items: list[Op], store, pr: Prompt) -> str:
         quotes = op.contra if op.kind == "retire" else op.evidence
         lines = [f"{i}. [{op.kind}] 关于{who}：{claim}"]
         for e in quotes:
-            prev = pr.prev.get(e.msg_id, "")
+            prev = pr.lines.get(pr.prev.get(e.msg_id, ""), "")
             line = pr.lines.get(e.msg_id, "")
             speaker = line.split("：", 1)[0] if "：" in line else ""
             if prev:
@@ -568,6 +581,49 @@ def _tries(env: Env, ch: Chunk) -> int:
         (env.scope_id, env.mode, ch.new[0].msg_id)).fetchone()[0]
 
 
+def refresh(store, msgs: list) -> None:
+    """Right before a model call: a message recalled or removed since gather is
+    blanked, so no later call sends it (PR #42 review). Blank messages are skipped
+    by build_prompt."""
+    ids = [m.msg_id for m in msgs]
+    live = set()
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        q = ",".join("?" * len(part))
+        live |= {r[0] for r in store.db.execute(
+            f"SELECT msg_id FROM messages WHERE msg_id IN ({q}) AND recalled=0", part)}
+    for m in msgs:
+        if m.msg_id not in live:
+            m.text = ""
+            m.captions = []
+
+
+def forget_dead(store, pr: Prompt) -> list[str]:
+    """Drop recalled or removed messages from a prompt's lines (the support check's
+    context). Returns the ids dropped."""
+    ids = list(pr.lines)
+    live = set()
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        q = ",".join("?" * len(part))
+        live |= {r[0] for r in store.db.execute(
+            f"SELECT msg_id FROM messages WHERE msg_id IN ({q}) AND recalled=0", part)}
+    dead = [i for i in ids if i not in live]
+    for i in dead:
+        pr.lines.pop(i, None)
+    return dead
+
+
+def reject_dead_evidence(outcome: Outcome, store) -> None:
+    """A cited message recalled or removed meanwhile can't support anything."""
+    for op in list(outcome.accepted) + [o for o, _ in outcome.demoted]:
+        for e in op.evidence + op.contra:
+            row = store.db.execute("SELECT recalled FROM messages WHERE msg_id=?", (e.msg_id,)).fetchone()
+            if row is None or row["recalled"]:
+                _move(outcome, op, Verdict("evidence", "a cited message was recalled or removed meanwhile"))
+                break
+
+
 def _snapshot(env: Env):
     return (getattr(env.store, "cache_gen", 0), frozenset(opted_pids(env.store)))
 
@@ -575,6 +631,8 @@ def _snapshot(env: Env):
 async def run_scope(env: Env) -> dict[str, Any]:
     """One group, one night (or /reg dream now). Returns numbers only."""
     now = int(env.clock())
+    if env.mode == "off" or not env.still_on():
+        return {"runs": [], "dropped_old": 0, "new_human": 0, "stopped": "dream off or group paused"}
     chunks, counts = gather(env.store, env.scope_id, mode=env.mode, now=now, bot_uids=env.bot_uids,
                             since_ts=env.since_ts)
     summary: dict[str, Any] = {"runs": [], "dropped_old": counts["dropped_old"], "new_human": counts["new_human"]}
@@ -596,6 +654,38 @@ async def run_scope(env: Env) -> dict[str, Any]:
             summary["stopped"] = r.get("why", r["status"])
             break
     return summary
+
+
+async def run_batch(scopes: list[str], make_env: Callable[[str], Env], live: Callable[[], bool],
+                    on_start: Callable[[str], None] = lambda sc: None) -> dict[str, dict]:
+    """Several groups in turn (a night, or /reg dream now). live() is the batch's own
+    permission, taken when it started: once a dream off has invalidated it, no later
+    group starts, even if dry is switched back on (PR #42 review)."""
+    out: dict[str, dict] = {}
+    for sc in scopes:
+        if not live():
+            out[sc] = {"runs": [], "stopped": "dream off"}
+            continue
+        on_start(sc)
+        out[sc] = await run_scope(make_env(sc))
+    return out
+
+
+def tonight_pending(env: Env, now: int) -> list[tuple[Op, str]]:
+    """Dry runs write nothing, so a later chunk would propose the same memory again
+    and use the cap twice (PR #42 review, non-blocking). Tonight's earlier accepted
+    and candidate adds stand in for what would have been written."""
+    if env.mode != "dry":
+        return []
+    out = []
+    for r in env.store.db.execute(
+            "SELECT diff_json FROM dream_runs WHERE scope_id=? AND mode='dry' AND status='ok' AND started>=?",
+            (env.scope_id, night_start(now))):
+        for d in json.loads(r["diff_json"] or "[]"):
+            op = d.get("op") or {}
+            if d.get("verdict") in ("accepted", "candidate") and op.get("kind") == "add":
+                out.append((Op.from_json(op), "validated" if d["verdict"] == "accepted" else "candidate"))
+    return out
 
 
 def tonight_used(env: Env, now: int) -> dict[str, Any]:
@@ -621,6 +711,7 @@ def tonight_used(env: Env, now: int) -> dict[str, Any]:
 
 async def run_chunk(env: Env, ch: Chunk, now: int, used: dict[str, Any]) -> dict[str, Any]:
     store, client = env.store, env.client
+    refresh(store, ch.seen + ch.new)  # recalled since gather (an earlier chunk's await): never sent
     pr = build_prompt(store, env.scope_id, ch, bot_uids=env.bot_uids)
     base = {"messages": len(ch.new), "excluded": ch.excluded, "version": VERSION}
     # the night's budget: what's spent plus this call's worst case
@@ -654,14 +745,27 @@ async def run_chunk(env: Env, ch: Chunk, now: int, used: dict[str, Any]) -> dict
     try:
         props = to_ops(parse_json(res.text), pr)
     except (ValueError, TypeError) as e:
-        rid = _record(env, now, ch, "failed", counts={**base, "error": "not JSON: " + str(e)[:60]},
+        rid = _record(env, now, ch, "failed", counts={**base, "error": "not the JSON asked for"},
                       model=model, cost=cost)
         return {"run": rid, "status": "failed", "why": "the answer wasn't the JSON asked for"}
-    ops = [p.op for p in props if p.op is not None]
-    ctx = DreamCtx(store, env.scope_id, now=now, admin_uids=set(env.admin_uids), bot_uids=set(env.bot_uids),
-                   persona_core=env.persona_core)
-    outcome = review(ops, M3_CHECKS, ctx)
-    nightly_caps(outcome, ops, used)
+    try:
+        ops = [p.op for p in props if p.op is not None]
+        ctx = DreamCtx(store, env.scope_id, now=now, admin_uids=set(env.admin_uids), bot_uids=set(env.bot_uids),
+                       persona_core=env.persona_core)
+        ctx.pending = tonight_pending(env, now)  # dry: tonight's earlier proposals count as written
+        outcome = review(ops, M3_CHECKS, ctx)
+        nightly_caps(outcome, ops, used)
+    except Exception as e:  # noqa: BLE001 - audited as failed, so the retry limit applies
+        rid = _record(env, now, ch, "failed", counts={**base, "error": f"verify: {type(e).__name__}"},
+                      model=model, cost=cost)
+        return {"run": rid, "status": "failed", "why": f"couldn't check the proposals ({type(e).__name__})"}
+    # before the support call: nothing recalled since goes out with it (PR #42 review)
+    if _snapshot(env) != snap or not env.still_on():
+        rid = _record(env, now, ch, "void", counts={**base, "reason": "forget, opt-out, pause or dream off"},
+                      model=model, cost=cost)
+        return {"run": rid, "status": "void", "why": "voided: something changed while it ran"}
+    forget_dead(store, pr)
+    reject_dead_evidence(outcome, store)
     answers, scost, serr = await support_check(client, list(outcome.accepted) + [o for o, _ in outcome.demoted],
                                                store, pr)
     apply_support(outcome, answers)
@@ -669,16 +773,11 @@ async def run_chunk(env: Env, ch: Chunk, now: int, used: dict[str, Any]) -> dict
         rid = _record(env, now, ch, "void", counts={**base, "reason": "forget, opt-out, pause or dream off"},
                       model=model, cost=cost)
         return {"run": rid, "status": "void", "why": "voided: something changed while it ran"}
-    # a recall during the run: its message can't support anything now
-    for op in list(outcome.accepted) + [o for o, _ in outcome.demoted]:
-        for e in op.evidence + op.contra:
-            row = store.db.execute("SELECT recalled FROM messages WHERE msg_id=?", (e.msg_id,)).fetchone()
-            if row is None or row["recalled"]:
-                _move(outcome, op, Verdict("evidence", "a cited message was recalled or removed meanwhile"))
-                break
+    reject_dead_evidence(outcome, store)  # recalled during the support call
     diff = _diff(outcome, props, answers, pr)
     counts = {**base, **tally(diff), "support_error": serr}
-    rid = _record(env, now, ch, "ok", diff=diff, counts=counts, model=model, cost=cost)
+    rid = _record(env, now, ch, "ok", diff=[{k: v for k, v in d.items() if k != "_raw"} for d in diff],
+                  counts=counts, model=model, cost=cost)
     if env.report_dir is not None:
         write_report(env.report_dir, rid, env, diff, counts, pr, store)
     return {"run": rid, "status": "ok", **{k: counts[k] for k in ("proposed", "accepted", "candidate", "rejected")}}
@@ -695,8 +794,11 @@ def _diff(outcome: Outcome, props: list[Proposal], answers: dict[int, str], pr: 
     out = []
     for p in props:
         if p.op is None:
-            out.append({"raw": {k: str(v)[:200] for k, v in p.raw.items()}, "verdict": "rejected",
-                        "reason": f"shape: {p.error}"})
+            # the raw proposal names people by nickname and quotes by ref: /reg forget
+            # couldn't find it, so it goes to the local report only, never the db
+            kind = p.raw.get("kind") if isinstance(p.raw.get("kind"), str) else None
+            out.append({"kind": kind if kind in KINDS else None, "verdict": "rejected",
+                        "reason": f"shape: {p.error}", "_raw": {k: str(v)[:200] for k, v in p.raw.items()}})
             continue
         v, why = verdict.get(id(p.op), ("rejected", "unknown"))
         out.append({"op": p.op.to_json(), "verdict": v, "reason": why, "support": answers.get(id(p.op))})
@@ -731,7 +833,7 @@ def write_report(folder: Path, run_id: int, env: Env, diff: list[dict], counts: 
     for d in diff:
         if "op" not in d:
             out.append(f"<h3 class='rejected'>rejected · couldn't read it</h3><p>{e(d['reason'])}</p>"
-                       f"<pre>{e(json.dumps(d['raw'], ensure_ascii=False))}</pre>")
+                       f"<pre>{e(json.dumps(d.get('_raw', {}), ensure_ascii=False))}</pre>")
             continue
         op = d["op"]
         who = "群里" if op.get("subject") is None else names.get(op["subject"], f"#{op['subject']}")

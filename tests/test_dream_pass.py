@@ -551,3 +551,158 @@ class BenchTests(unittest.TestCase):
         for text in ("答辩", "小王", "71001"):
             self.assertNotIn(text, reply.split("报告")[0] + last)
         self.assertEqual(ledger.db.execute("SELECT COUNT(*) FROM model_calls WHERE role='dream'").fetchone()[0], 1)
+
+
+SCOPE2 = "llbot:GroupMessage:556"
+
+
+class Review42Tests(unittest.TestCase):
+    def test_dream_off_stops_the_rest_of_the_batch_for_good(self):
+        """P1: off during group 1 must not let group 2 run, nor off-then-dry revive it."""
+        for revive in (False, True):
+            with self.subTest(revive=revive):
+                w = World()
+                w.chat()
+                w.store.scope(SCOPE2, "llbot", "group")
+                for i in range(25):
+                    w.store.add_message(msg_id=f"g2:{i}", scope_id=SCOPE2, person_id=w.pid["小王"],
+                                        ts=T0 + 100 + i, text=f"第二个群{i}")
+                state = {"gen": 0, "mode": "dry"}
+                gen = state["gen"]
+
+                def flip():
+                    state["gen"] += 1
+                    state["mode"] = "off"
+                    if revive:
+                        state["gen"] += 1
+                        state["mode"] = "dry"
+                w.during = flip
+                live = lambda: state["gen"] == gen and state["mode"] != "off"  # noqa: E731
+
+                def make(sc):
+                    e = w.env()
+                    e.scope_id = sc
+                    e.still_on = live
+                    return e
+                res = asyncio.run(dp.run_batch([SCOPE, SCOPE2], make, live))
+                self.assertEqual(res[SCOPE2]["stopped"], "dream off")
+                dreams = [p for s, p in w.prompts if s == dp.INSTRUCTIONS]
+                self.assertEqual(len(dreams), 1)
+                self.assertNotIn("第二个群", "".join(dreams))
+                self.assertEqual([(r["scope_id"], r["status"]) for r in w.rows()], [(SCOPE, "void")])
+
+    def test_a_scope_never_runs_with_dream_off(self):
+        w = World(mode="off")
+        w.chat()
+        e = w.env()
+        e.mode = "off"
+        self.assertIn("off", asyncio.run(dp.run_scope(e))["stopped"])
+        self.assertEqual(w.prompts, [])
+
+    def test_a_recall_during_chunk_one_never_reaches_chunk_two(self):
+        """P2: the recalled message would have gone out with the next call."""
+        w = World()
+        w.chat(400)
+        last = w.say("小李", "这句后来撤回了")
+        w.during = lambda: w.store.recall(last) if len(w.prompts) == 1 else None
+        w.run()
+        dreams = [p for s, p in w.prompts if s == dp.INSTRUCTIONS]
+        self.assertEqual(len(dreams), 2)
+        self.assertNotIn("这句后来撤回了", dreams[1])
+
+    def test_a_recalled_previous_line_isnt_sent_to_the_support_check(self):
+        """P2: the line before a quote was recalled while the dreamer ran."""
+        w = World()
+        w.chat()
+        before = w.say("小李", "你最近在忙什么秘密的事")
+        a = w.say("小王", "我在学日语")
+        two_pass(w, lambda r: [])
+        w.store.db.execute("DELETE FROM dream_runs")
+        ref = ref_of(w, a)
+        w.during = lambda: w.store.recall(before)
+        w.dream_answers = [{"ops": [{"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+                                     "evidence": [{"ref": ref, "quote": "我在学日语"}]}]}]
+        w.run()
+        sp = [p for s, p in w.prompts if s == dp.SUPPORT_INSTRUCTIONS][-1]
+        self.assertNotIn("秘密", sp)
+        self.assertEqual(w.last_diff()[0]["verdict"], "accepted")
+
+    def test_shape_rejections_keep_no_content_in_the_db(self):
+        """P2: forget can't trace a nickname or a ref'd quote, so they're never stored."""
+        w = World()
+        w.chat()
+        w.say("小王", "我在学日语")
+        w.dream_answers = [{"ops": [{"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+                                     "evidence": [{"ref": "m999", "quote": "我在学日语"}]},
+                                    {"kind": "add", "type": "identity", "subject": "小王x", "text": "在学日语"}]}]
+        w.run()
+        blob = w.rows()[-1]["diff_json"]
+        for text in ("小王", "日语", "m999"):
+            self.assertNotIn(text, blob)
+        self.assertEqual([d["reason"] for d in json.loads(blob)],
+                         ["shape: unknown message ref", "shape: unknown person"])
+        report = next((w.d / "dream").glob("*.html")).read_text(encoding="utf-8")
+        self.assertIn("日语", report)  # the local report still shows what was proposed
+        w.store.forget_person("llbot", "10001")
+        self.assertNotIn("日语", w.rows()[-1]["diff_json"])
+
+    def test_one_malformed_proposal_doesnt_sink_the_rest(self):
+        """P2: evidence without its list raised AttributeError and the run vanished."""
+        w = World()
+        w.chat()
+        a = w.say("小王", "我在学日语")
+        two_pass(w, lambda r: [
+            {"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+             "evidence": {"ref": r(a), "quote": "我在学日语"}},
+            {"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+             "evidence": [{"ref": r(a), "quote": "我在学日语"}]},
+            {"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语2",
+             "evidence": ["m1"]},
+            {"kind": "merge", "claim": "c1", "merge": "c2"}])
+        self.assertEqual(w.rows()[-1]["status"], "ok")
+        self.assertEqual([(d["verdict"], d["reason"]) for d in w.last_diff()],
+                         [("rejected", "shape: evidence must be a list"), ("accepted", ""),
+                          ("rejected", "shape: evidence items must be {ref, quote}"),
+                          ("rejected", "shape: unknown memory ref")])
+
+    def test_an_unexpected_error_while_checking_is_audited_as_failed(self):
+        w = World()
+        w.chat()
+
+        def boom(op, ctx):
+            raise RuntimeError("bug")
+        a = w.say("小王", "我在学日语")
+        old = dp.M3_CHECKS
+        dp.M3_CHECKS = [boom]
+        try:
+            for _ in range(3):
+                w.dream_answers = [{"ops": [{"kind": "add", "type": "self_disclosure", "subject": "小王",
+                                             "text": "x", "evidence": []}]}]
+                w.run()
+        finally:
+            dp.M3_CHECKS = old
+        self.assertEqual([r["status"] for r in w.rows()], ["failed"] * 3)
+        w.run()
+        self.assertEqual(w.rows()[-1]["status"], "skipped")  # the retry limit now applies
+        self.assertTrue(a)
+
+    def test_dry_chunks_dont_repeat_tonights_proposals(self):
+        """Non-blocking note: chunk two re-proposed what chunk one had, using the cap twice."""
+        w = World()
+        w.chat(390)
+        a = w.say("小王", "我在学日语")  # in chunk one, and in chunk two's overlap
+        w.chat(30)
+        w.dream_answers = [{"ops": []}, {"ops": []}]
+        w.run()
+        w.store.db.execute("DELETE FROM dream_runs")
+        op = {"kind": "add", "type": "self_disclosure", "subject": "小王", "text": "在学日语",
+              "evidence": [{"ref": ref_of(w, a), "quote": "我在学日语"}]}
+        first_prompt = [p for s, p in w.prompts if s == dp.INSTRUCTIONS][-2]
+        ref1 = next(line.split(" ", 1)[0] for line in first_prompt.splitlines() if line.endswith("我在学日语"))
+        w.dream_answers = [{"ops": [dict(op, evidence=[{"ref": ref1, "quote": "我在学日语"}])]}, {"ops": [op]}]
+        w.run()
+        rows = w.rows()
+        self.assertEqual(len(rows), 2)
+        first, second = (json.loads(r["diff_json"]) for r in rows)
+        self.assertEqual(first[0]["verdict"], "accepted")
+        self.assertEqual((second[0]["verdict"], second[0]["reason"].split(":")[0]), ("rejected", "duplicate"))
