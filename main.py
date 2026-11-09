@@ -26,7 +26,9 @@ from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
 from .bench.situations import forget_sender
 from .core.admin import AdminCommands
+from .core import feedback
 from .core.budget import Budget, load_prices
+from .core.live import Speaker
 from .core import captions as cap
 from .core.llm import ROLES, AsyncReply, ModelAdmin, ModelClient
 from .core.decide import DEFAULT_ALIASES
@@ -109,8 +111,11 @@ class Regular(Star):
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases,
                                  params=load_params(self.data_dir), captions=self.caption_images)
         self._refresh_opt_outs()
+        self.speaker = Speaker(self.pipeline, self.models, self.persona, self.outbox, deliver=self._deliver)
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
+        self.learner = Janitor(self._learn, interval_s=300)  # automatic labels from the group's reactions
+        self.feedback_stats: dict[str, int] = {}
         self.janitor.start()  # no running loop yet? the first event starts it
         self._isolation_checked = False
         if not self.gate_cfg.group_ids:
@@ -122,6 +127,8 @@ class Regular(Star):
         try:
             if not self.janitor.running:
                 self.janitor.start()
+            if not self.learner.running:
+                self.learner.start()
             if not self._isolation_checked:
                 self._isolation_checked = True
                 self._check_isolation()
@@ -129,6 +136,8 @@ class Regular(Star):
             out = self.pipeline.handle(ev)
             if out.action != "drop" or out.reasons.get("gate") == "own_message":
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
+            if out.moment is not None:
+                self.speaker.on_moment(ev.scope_id, out.moment)  # live replies (send_mode dry|on)
             if out.reasons.get("caption_photos"):
                 gen = self.store.cache_gen  # before the download: a forget meanwhile cancels it
                 task = asyncio.create_task(self._caption(raw_payload(event), ev.msg_id,
@@ -191,8 +200,10 @@ class Regular(Star):
             "version": VERSION,
             "harness": self.pipeline.harness_version,
             "persona": self.persona.version,
-            "mode": "decide runs in shadow; sending: " + self.outbox.mode
-                    + (" (only /reg say sends before M2)" if self.outbox.mode != "off" else ""),
+            "mode": {"off": "observing only (sending off)",
+                     "dry": "replies composed and logged, not sent (dry)",
+                     "on": "replying in the group"}.get(self.outbox.mode, self.outbox.mode),
+            "learning": feedback.as_trace(self.feedback_stats) or "nothing settled yet",
             "uptime_min": (int(time.time()) - self.started) // 60,
             "groups_watched": len(self.gate_cfg.group_ids),
             "groups_paused": len(self.gate_cfg.paused_groups & self.gate_cfg.group_ids),
@@ -253,6 +264,14 @@ class Regular(Star):
         except Exception:
             logger.exception("[regular] send failed")
 
+    def _learn(self) -> None:
+        """Every 5 minutes: label what the group's reactions have settled (core/feedback)."""
+        now = int(time.time())
+        for sc in self.store.group_scopes(self.gate_cfg.group_ids):
+            c = feedback.run(self.store, sc, now, aliases=self.aliases, bot_uids=self.gate_cfg.bot_uids)
+            for k, v in c.items():
+                self.feedback_stats[k] = self.feedback_stats.get(k, 0) + v
+
     def _save_send_mode(self, mode: str) -> None:
         self.config["send_mode"] = mode
         try:
@@ -290,7 +309,8 @@ class Regular(Star):
             logger.info(f"[regular] retention: removed {n} old messages")
 
     async def terminate(self):
-        for t in list(self._tasks):
+        for t in list(self._tasks) + list(self.speaker.tasks):
             t.cancel()
+        await self.learner.stop()
         await self.janitor.stop()
         self.store.close()

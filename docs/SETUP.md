@@ -399,6 +399,52 @@ Live decide doesn't see a photo's own description yet: it arrives a few seconds
 after the message. The surrounding context does, and live replies (M2c part 2)
 will wait for it.
 
+## Live replies (M2c part 2)
+
+With `send_mode` set to `on` (`/reg send on` in the admin DM), 阿灯 talks in the
+group. `dry` does everything except the send: each reply is composed, checked and
+traced, but not sent. `off` (the default) only observes and makes no model calls
+for replies.
+
+How a reply happens (`core/live.py`):
+1. A message is stored. 阿灯 waits for that person's pause: 4 seconds without a
+   new message from them, at most 15 seconds per turn. A burst is one turn.
+2. Decide runs on the whole turn with the M2 rules (`/reg bench tune apply` makes
+   them use your tuned numbers). An @, a quote of him or a poke is always
+   answered, within the limits (bot loops, @ bursts). Otherwise he chimes in when
+   the rules say so; never while asleep, during an argument or a serious moment,
+   twice in a row, or above about a fifth of recent messages.
+3. Compose writes the reply and the voice check approves it (one redraft at
+   most); the outbox checks it again, splits it into up to three messages with
+   typing delays, and applies the hourly cap (20 per group).
+4. One group, one reply at a time: the next decision waits until this reply is
+   sent, so it sees what he just said.
+
+An @ that hits a model error gets one retry; over the daily budget it gets a
+short canned in-character line instead of a model call. Reactions (emoji) aren't
+sent yet. Every turn leaves a trace (`ended_at="live"`: the rule, outcome, hit
+kinds, cost; no text).
+
+To stop him at any time: `/reg send off`, or `/reg pause <group>`.
+
+## Learning from the group (automatic)
+
+Every 5 minutes the plugin looks at moments at least 5 minutes old and labels
+what the group's reaction settled (`core/feedback.py`). This only covers times he
+**chose** to chime in, since answering an @ is a rule:
+- engaged (someone quotes him, @s him, uses his name, or reacts to what he said)
+  → that was a good moment to speak;
+- ignored (people kept talking without turning to him) or pushed back (a rude
+  cue aimed at him) → better to stay quiet;
+- nobody said anything → no label.
+
+A question to the group that nobody else answers within 5 minutes, while he
+stayed quiet, becomes a "should have spoken" label. Your own labels always win.
+These automatic labels feed `/reg bench tune` and the model cutoffs on the
+tuning side only: the held-out set stays your hand labels, and the label-rate
+estimate ignores them. They're deleted with their message (recall, forget,
+retention). `/reg status` shows the counts under `learning`.
+
 ## Where data lives
 
 `<astrbot>/data/plugin_data/astrbot_plugin_regular/`

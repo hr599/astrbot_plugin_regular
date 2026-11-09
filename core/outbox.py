@@ -46,6 +46,9 @@ class Job:
     mode: str = "off"  # the mode it was created under: a dry job never becomes a real send
     gen: int = 0  # outbox generation at creation; any mode change retires older jobs
     reserved: int = 0  # parts still held against the group cap
+    # live replies: the turn it answers must still stand (message not recalled, nobody
+    # forgotten since); checked before every part (PR #36 review)
+    still_valid: Any = None
 
 
 @dataclass
@@ -136,6 +139,8 @@ class Outbox:
             return "sending was switched off"
         if job.gen != self.gen:
             return "sending mode changed since it was queued"
+        if job.still_valid is not None and not job.still_valid():
+            return "the message it answers was recalled or forgotten"
         if job.group_id in paused:
             return "group paused"
         # this job's own reserved parts are already inside the cap

@@ -199,15 +199,19 @@ class Pipeline:
                 if ev.sender_uid and ev.sender_uid not in self.gate_cfg.opted_out_uids:
                     reasons["actor"] = self.store.person(ev.platform, ev.sender_uid, None, ev.ts)
                     sender = str(reasons["actor"])
-                reasons["shadow"] = self._shadow(Msg(
-                    msg_id="", ts=ev.ts, sender=sender, text="[戳一戳]", kind="poke",
-                    poke_bot=reasons["poked_bot"], from_bot=ev.sender_uid in self.gate_cfg.bot_uids,
-                ), ev.scope_id)
+                poke = Msg(
+                    msg_id=f"poke:{ev.scope_id}:{ev.ts}:{sender}", ts=ev.ts, sender=sender, text="[戳一戳]",
+                    kind="poke", poke_bot=reasons["poked_bot"], from_bot=ev.sender_uid in self.gate_cfg.bot_uids,
+                )
+                reasons["shadow"] = self._shadow(poke, ev.scope_id)
             self.store.trace(
                 scope_id=ev.scope_id, msg_id=trace_msg, ended_at="gate", decision=None,
                 reasons=reasons, harness_version=self.harness_version, ts=ev.ts,
             )
-            return Outcome("gate", "notice", reasons)
+            out = Outcome("gate", "notice", reasons)
+            if ev.notice_type == "poke" and reasons.get("poked_bot"):
+                out.moment = poke
+            return out
 
         # observe: a group message from a watched group
         p = perceive(ev, name_of=lambda uid: self.store.latest_name(ev.platform, uid))
@@ -228,13 +232,14 @@ class Pipeline:
             reply_to=p.reply_to, mentions=p.mentions, reply_to_bot=reply_to_bot,
         )
         from_bot = ev.sender_uid in self.gate_cfg.bot_uids
-        shadow = self._shadow(Msg(
+        moment = Msg(
             msg_id=ev.msg_id, ts=ev.ts, sender=str(pid), text=p.text,
             mentions_bot=p.mentions_bot, mentions_other=any(x != "bot" for x in p.mentions),
             reply_to=p.reply_to,
             reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
             name=display_name(ev.sender_name, ev.sender_uid),
-        ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
+        )
+        shadow = self._shadow(moment, ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
         photos = p.media_kinds.count("image")  # stickers are "sticker": not described
         caption_photos = photos if (self.captions and stored and photos and not from_bot) else 0
@@ -260,4 +265,4 @@ class Pipeline:
             scope_id=ev.scope_id, msg_id=ev.msg_id, ended_at="perceive", decision="quiet",
             reasons=reasons, harness_version=self.harness_version, ts=ev.ts,
         )
-        return Outcome("perceive", "logged", reasons)
+        return Outcome("perceive", "logged", reasons, moment=moment if stored else None)

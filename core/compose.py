@@ -179,11 +179,13 @@ class Composed:
 
 async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhythm: str = "free",
                   group_p90_len: int | None = None, rules: dict[str, Any] | None = None,
-                  cache: bool = False, rng: random.Random | None = None, gen: int | None = None) -> Composed:
+                  cache: bool = False, rng: random.Random | None = None, gen: int | None = None,
+                  alive=None) -> Composed:
     """persona: core.persona.Persona (prompt, protected texts, examples, canary).
     gen: the store's forget generation when the chat was read. Checked before every
     model request (the redraft too): after a /reg forget, nothing more goes out
-    (PR #30 review)."""
+    (PR #30 review). alive(): an extra check the caller needs (live replies: the
+    message wasn't recalled, the send mode didn't change), checked at the same points."""
     store = client.budget.store
     if gen is None:
         gen = getattr(store, "cache_gen", 0)
@@ -196,8 +198,8 @@ async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhyt
     out = Composed("drop")
     prompt = base
     for attempt in (0, 1):
-        if getattr(store, "cache_gen", 0) != gen:
-            out.outcome = "forgotten"
+        if getattr(store, "cache_gen", 0) != gen or (alive is not None and not alive()):
+            out.outcome = "forgotten"  # forgotten, recalled or switched off: nothing more goes out
             return out
         try:
             r = await client.generate("reply", system=system, prompt=prompt, max_tokens=MAX_TOKENS,

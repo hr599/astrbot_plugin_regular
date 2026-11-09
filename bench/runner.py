@@ -11,7 +11,7 @@ import random
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ._core import DEFAULT_ALIASES, M2_POLICY, POLICY_VERSION, Decision, Msg, decide, decide_m2, limits, tier_of
+from ._core import DEFAULT_ALIASES, M2_POLICY, POLICY_VERSION, Decision, Msg, decide, decide_m2, limits, merged_captions, merged_msg, tier_of
 from .situations import Recording
 from .splits import is_test
 
@@ -57,37 +57,6 @@ def turns(messages: list[Msg]) -> list[list[int]]:
                 continue
         out.append([i])
     return out
-
-
-def merged_msg(ms: list[Msg]) -> Msg:
-    """One turn as one moment: the last message, with the whole turn's text and any
-    @ / quote / media from any part of it."""
-    last = ms[-1]
-    if len(ms) == 1:
-        return last
-    return Msg(
-        msg_id=last.msg_id, ts=last.ts, sender=last.sender, text="\n".join(m.text for m in ms if m.text),
-        kind=last.kind, mentions_bot=any(m.mentions_bot for m in ms),
-        reply_to=next((m.reply_to for m in ms if m.reply_to), None),
-        reply_to_bot=any(m.reply_to_bot for m in ms), poke_bot=any(m.poke_bot for m in ms),
-        is_bot=last.is_bot, from_bot=last.from_bot, scene=last.scene,
-        media=[x for m in ms for x in (m.media or [])], mentions_other=any(m.mentions_other for m in ms),
-        name=last.name,  # PR #33 review: a merged burst kept the nickname alignment
-        captions=merged_captions(ms),  # PR #34 review: photo, then a line about it
-    )
-
-
-def merged_captions(ms: list[Msg]) -> list:
-    """The turn's captions, one slot per [图片] in the joined text, in order, so each
-    stays on its own photo even when one in the middle wasn't described."""
-    out: list = []
-    for m in ms:
-        if not m.text:
-            continue
-        n = m.text.count("[图片]")
-        caps = list(m.captions or [])[:n]
-        out += caps + [None] * (n - len(caps))
-    return out if any(out) else []
 
 
 def replay(rec: Recording, policy: Callable[..., Decision] = decide, *,
@@ -148,8 +117,10 @@ def score(run: Run, implied: dict[str, Any] | None | bool = True) -> dict[str, A
 
     lab_all = [s for s in people if s.label is not None]
     split = run.recording.source != "fixture"
-    lab = [s for s in lab_all if not (split and is_test(s.msg.msg_id))]  # dev side
-    held = [s for s in lab_all if split and is_test(s.msg.msg_id)]
+    auto = lambda s: s.label.get("source") == "auto"  # noqa: E731
+    # automatic labels (the group's reactions) only ever tune: held-out stays your hand labels
+    lab = [s for s in lab_all if not (split and is_test(s.msg.msg_id) and not auto(s))]  # dev side
+    held = [s for s in lab_all if split and is_test(s.msg.msg_id) and not auto(s)]
     st = _label_stats(lab)
 
     tags: dict[str, dict[str, int]] = {}
@@ -176,7 +147,8 @@ def score(run: Run, implied: dict[str, Any] | None | bool = True) -> dict[str, A
 
     # implied rates read only labels and the chat, not the decisions: a caller that
     # rescores many decision sets passes the first result back in (model_bench.fit)
-    implied = (implied_rates(run, lab) if split else None) if implied is True else implied
+    # automatic labels cluster around 阿灯's own messages: they'd skew the rate estimate
+    implied = (implied_rates(run, [s for s in lab if not auto(s)]) if split else None) if implied is True else implied
 
     return {
         "implied": implied,
@@ -185,6 +157,7 @@ def score(run: Run, implied: dict[str, Any] | None | bool = True) -> dict[str, A
         "pokes": len(pokes),
         "labeled": len(lab_all),
         "labeled_dev": len(lab),
+        "labeled_auto": sum(1 for s in lab if auto(s)),
         "would_speak": len(speaks),
         # target: under about 10% of the group's messages in an active group
         "bot_share": _ratio(len(speaks), len(people) + len(speaks)),

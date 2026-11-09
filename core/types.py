@@ -69,3 +69,4 @@ class Outcome:
     action: str  # drop | logged | notice | admin
     reasons: dict[str, Any] = field(default_factory=dict)
     admin_reply: Any = None  # text for the admin's DM, or an AsyncReply (core/llm.py) to await
+    moment: Any = None  # the decide.Msg of a stored group message or a poke (live replies), never serialized
