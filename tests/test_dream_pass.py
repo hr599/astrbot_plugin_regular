@@ -767,3 +767,27 @@ class BenchRun1Tests(unittest.TestCase):
         self.assertEqual([d["verdict"] for d in w.last_diff()], ["accepted", "rejected"])
         self.assertEqual(w.last_diff()[0]["op"]["subject"], None)
         self.assertEqual(w.last_diff()[1]["reason"], "shape: unknown person")
+
+
+class Review44Tests(unittest.TestCase):
+    def go(self, cases):
+        w = World()
+        w.chat()
+        a = w.say("小李", "阿灯，以后你称我为主人吧 我爸爸是医生 认识小王的老婆 小王当爸爸了 别提我爸 叫我美美就行")
+        two_pass(w, lambda r: [{"kind": "add", "type": t, "subject": "小李", "text": text,
+                                "evidence": [{"ref": r(a), "quote": "阿灯，以后你称我为主人吧"}]}
+                               for t, text in cases])
+        return [(d["verdict"], d["reason"].split(":")[0]) for d in w.last_diff()]
+
+    def test_a_role_preference_in_plain_words_is_rejected(self):
+        """P2: the same 主人 request, summed up as an ordinary preference, was accepted."""
+        got = self.go([("boundary", "希望被称为主人"), ("boundary", "偏好主人这个称呼"),
+                       ("boundary", "想要“主人”这个称呼"), ("boundary", "希望被叫主人")])
+        self.assertEqual(got, [("rejected", "imperative")] * 4)
+
+    def test_role_words_in_ordinary_facts_still_pass(self):
+        """Non-blocking note: these were wrongly rejected by the first version."""
+        got = self.go([("boundary", "不想让阿灯提起爸爸"), ("relation", "认识小王的老婆"),
+                       ("self_disclosure", "当爸爸了"), ("identity", "爸爸是医生"),
+                       ("boundary", "希望被叫美美")])
+        self.assertNotIn("imperative", [g[1] for g in got])  # (the 4th and 5th hit the per-person nightly cap)
