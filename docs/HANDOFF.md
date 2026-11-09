@@ -126,9 +126,14 @@ M4 social → M5 learning loop.
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
 4. **Merge #40 and #39**, then watch a day live: how many unprompted replies per hour, and whether he now lets threads go. Tune `unprompted_per_hour` / `follow_up_max` in decide.json if he's too quiet or too chatty.
 5. **After going live:** a numbers-only check of the first days (replies and reactions per day, engaged vs ignored, missed questions, cost), then retune with the automatic labels.
-6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
+6. **Decided (Nov 9):** when the group discusses 阿灯 or this project, he joins in, in character. No change needed.
 7. **M2d bake-off: dropped (owner's call, Nov 9).** deepseek-flash is good enough for replies, judging by the real drafts. To revisit, point `provider_reply` at a v4-pro provider and rerun `/reg bench compose`. The blind test (can the group tell him from a member?) is optional, after a while live.
-8. **Later:** M3 memory (the dream pass's model half), M4 tone and stickers, M5 learning loop.
+8. **M3 memory: spec written, waiting for the owner's review before any code.** It's the "M3 memory spec" tab of the design doc (https://claude.ai/artifact/Uz9u48RGAiw6oH4RB5zTvZ). The owner's calls: dream nightly only (plus `/reg dream now`); the relationship record moves to M4; memories are reviewed through `/reg mem` in the admin DM plus a local HTML report per run (Claude sees counts only); no recall tools, memories are injected. Four PRs, each behind a gate:
+   - **M3a, dreaming in dry mode:** gather (refs `m1`…, nickname handles, captions as context only), v4-pro proposal, the #11 checks plus people / persona-overlap / text / nightly-cap checks, one flash quote-support call, the run report, `/reg dream off|dry|now|log`. Gate: the synthetic fixture stores none of 10 wrong notes and finds 10 of 15; the owner reads 3+ dry-run reports, 90%+ right.
+   - **M3b, dreaming on:** apply, revert, decay and expiry, recall cleanup, `{p:id}` name tokens covered by forget, `/reg mem show|group|del|pin`.
+   - **M3c, memories in replies:** a `<memory>` block in the compose user turn, ~600 tokens, validated only.
+   - **M3d, episodes.**
+9. **Later:** M4 (relationship record, tone, stickers, mood), M5 learning loop.
 
 ## Pointers
 
