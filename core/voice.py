@@ -357,6 +357,29 @@ def delays(parts: list[str], rng: random.Random | None = None) -> list[float]:
 
 
 # ---------------------------------------------------------------- the stage
+# a laugh tacked on the end of a line: "…吧 hhh", "…了哈哈哈", "…233"
+LAUGH_END = re.compile(r"[\s，,~～]*(?:h{2,}|哈{2,}|嘿嘿+|嘻嘻+|233+)[\s~～!！.。]*$", re.I)
+
+
+def trim_laughs(parts: list[str], recent_own: list[str], window: int = 4) -> tuple[list[str], bool]:
+    """At most one laugh ending in his last few lines (live, Nov 9: nearly every
+    reply ended in "hhh"). Strips it rather than redrafting: no model call. A line
+    that is only a laugh stays, unless other parts carry the reply."""
+    if not any(LAUGH_END.search(t or "") for t in recent_own[-window:]):
+        return parts, False
+    out, trimmed = [], False
+    for p in parts:
+        rest = LAUGH_END.sub("", p)
+        if rest != p and rest.strip():
+            out.append(rest.rstrip())
+            trimmed = True
+        elif rest != p and len(parts) > 1:
+            trimmed = True  # a bare "hhh" part next to a real one
+        else:
+            out.append(p)
+    return (out, trimmed) if out else (parts, False)
+
+
 @dataclass
 class VoiceDecision:
     verdict: str  # send | rewrite | dodge | drop
