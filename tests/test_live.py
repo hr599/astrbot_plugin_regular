@@ -37,7 +37,16 @@ class Live:
         self.prompts = []
         self.answers = list(answers or [])
 
+        self.sincere = '{"sincere": true}'  # what the crisis check answers (decide role)
+        self.checks = []
+
         async def call(pid, system, prompt, params):
+            if '"sincere"' in system:
+                self.checks.append(prompt)
+                a = self.sincere() if callable(self.sincere) else self.sincere
+                if isinstance(a, Exception):
+                    raise a
+                return a, Usage(input_other=300, output=5), "stop"
             self.prompts.append(prompt)
             a = self.answers.pop(0) if self.answers else "好的"
             if callable(a):
@@ -47,7 +56,7 @@ class Live:
             return json.dumps({"gist": "g", "reply": a}, ensure_ascii=False), Usage(input_other=500, output=20), "stop"
 
         budget = Budget(self.store, load_prices(), monthly={"deepseek": monthly, "openai": 30}, usd_to_cny=7.0)
-        self.client = ModelClient(budget, providers={"reply": "ds"}, model_of=lambda pid: "deepseek-flash",
+        self.client = ModelClient(budget, providers={"reply": "ds", "decide": "ds"}, model_of=lambda pid: "deepseek-flash",
                                   call=call, clock=lambda: self.now)
         self.persona = load_persona(self.d)
         self.outbox = Outbox(mode, protected=self.persona.protected, canaries=self.persona.canaries,
