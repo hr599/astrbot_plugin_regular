@@ -216,6 +216,88 @@ def chimed(store, target, bot_mid, dt, direct=False):
                       text="我也觉得", reply_to=f"{SCOPE}:{target}", is_bot=True)
 
 
+class ChattinessTests(unittest.TestCase):
+    """Live, Nov 9: he replied to every line someone sent after an @, and hit the
+    20-messages-an-hour cap fast."""
+
+    def chain(self, lines, start=None):
+        async def go():
+            w = Live(["嗯嗯"] * 20)
+            if start is not None:
+                w.post(1, start)
+                await w.settle()
+            for i, t in enumerate(lines):
+                w.now = E + 30 * (i + 1)
+                w.post(10 + i, t, dt=30 * (i + 1))
+                await w.settle()
+            return w
+        return asyncio.run(go())
+
+    def test_one_follow_up_then_he_lets_it_go(self):
+        w = self.chain(["今天好累", "刚下课", "晚上吃啥好呢", "算了不想了", "去打球了"], start=at_bot("在吗"))
+        replies = [(d, i.get("rule")) for d, i in w.traces() if d == "reply"]
+        self.assertEqual(replies, [("reply", "direct"), ("reply", "addressed")])  # the @, then one follow-up
+        self.assertFalse(any(d == "error" for d, _ in w.traces()))
+
+    def test_addressing_him_again_restarts_it(self):
+        async def go():
+            w = Live(["嗯"] * 20)
+            seq = [at_bot("在吗"), "今天好累", "刚下课", at_bot("你呢"), "我也是", "唉"]
+            for i, t in enumerate(seq):
+                w.now = E + 30 * i
+                w.post(1 + i, t, dt=30 * i)
+                await w.settle()
+            return w
+        w = asyncio.run(go())
+        rules = [i.get("rule") for d, i in w.traces() if d == "reply"]
+        self.assertEqual(rules, ["direct", "addressed", "direct", "addressed"])
+
+    def test_an_at_merged_with_a_plain_line_still_restarts_it(self):
+        """PR #39 review (non-blocking): @ then a plain line, merged into one turn."""
+        async def go():
+            w = Live(["嗯"] * 20)
+            w.post(1, at_bot("在吗"), dt=0)
+            await w.settle()
+            for i, t in enumerate(["今天好累", "刚下课"]):  # one follow-up: the chain is used up
+                w.now = E + 30 * (i + 1)
+                w.post(2 + i, t, dt=30 * (i + 1))
+                await w.settle()
+            w.now = E + 100
+            w.post(5, at_bot("你呢"), dt=100)
+            w.post(6, "我是说晚上", dt=100)  # same turn as the @
+            await w.settle()
+            for i, t in enumerate(["我也是", "唉"]):
+                w.now = E + 130 + 30 * i
+                w.post(7 + i, t, dt=130 + 30 * i)
+                await w.settle()
+            return w
+        w = asyncio.run(go())
+        ids = [r[0] for r in w.store.db.execute(
+            "SELECT msg_id FROM traces WHERE ended_at='live' AND decision='reply' ORDER BY trace_id")]
+        ids = [int(x.rsplit(":", 1)[1]) for x in ids]
+        self.assertEqual(ids, [1, 2, 6, 7])  # the merged @ turn, then one follow-up again
+
+    def test_unprompted_replies_have_an_hourly_cap(self):
+        import core.decide_rules as dr
+        async def go():
+            w = Live(["嗯"] * 20)
+            w.p.params = dr.merge(w.p.params, {"unprompted_per_hour": 2, "reply_chime": 0.0, "react_chime": 0.0,
+                                               "share_cap": 1.0})
+            for i in range(5):  # different people, each a chime-in candidate
+                w.now = E + 200 * i
+                w.post(1 + i, f"有人会blender吗{i}", uid=str(30000 + i), name=f"人{i}", dt=200 * i)
+                await w.settle()
+            w.now = E + 1100
+            w.post(9, at_bot("在吗"), dt=1100)  # a direct address is never capped
+            await w.settle()
+            return w
+        w = asyncio.run(go())
+        refused = [i for d, i in w.traces() if "unprompted cap" in str(i.get("refused", ""))]
+        self.assertGreaterEqual(len(refused), 1)
+        self.assertEqual(sum(1 for d, i in w.traces() if d == "reply" and not i.get("direct")), 2)
+        self.assertEqual(w.traces()[-1][1].get("rule"), "direct")
+
+
 class Review36Tests(unittest.TestCase):
     """PR #36 review: a turn in flight cancels itself; A-B-A keeps its middle."""
 

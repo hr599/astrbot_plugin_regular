@@ -420,6 +420,13 @@ How a reply happens (`core/live.py`):
 4. One group, one reply at a time: the next decision waits until this reply is
    sent, so it sees what he just said.
 
+**How chatty.** After he answers someone, their next message counts as talking to
+him once (`follow_up_max`, default 1); after that they address him again (@, a
+quote, his name) or he lets the conversation go. Replies that weren't to a direct
+address are capped at `unprompted_per_hour` (default 6) per group; @s, quotes and
+pokes are never capped by this (only by the hourly 20-message cap). Both are in
+`harness/rules/decide.json`, and a tuned `decide_params.json` can override them.
+
 An @ that hits a model error gets one retry; over the daily budget it gets a
 short canned in-character line instead of a model call.
 

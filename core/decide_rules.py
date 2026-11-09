@@ -124,7 +124,7 @@ def decide_m2(m: Msg, context: list[Msg], now: int, *, aliases: tuple[str, ...] 
         score, why = A["name_question"], why + ["question"]
     elif kind == "name":
         score = A["name"]
-    if st.follow_up(m.sender, now, A["follow_up_window_s"]) and score < A["follow_up"]:
+    if st.follow_up(m.sender, now, A["follow_up_window_s"], A.get("follow_up_max", 1)) and score < A["follow_up"]:
         score, kind, why = A["follow_up"], "follow_up", why + ["follow_up"]
     if elsewhere and kind != "name":
         score = min(score, A["elsewhere_cap"])
