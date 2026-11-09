@@ -14,7 +14,7 @@ import json
 from typing import Any, Callable
 
 from . import limits
-from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, name_addressed
+from .decide import DEFAULT_ALIASES, POLICY_VERSION, Msg, decide, display_name, name_addressed
 from .decide_rules import POLICY as M2_POLICY, decide_m2
 from .limits import LimitState
 from .moments import stored_moments
@@ -64,6 +64,7 @@ class Pipeline:
                 mentions_other=any(x != "bot" for x in mentions),
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
+                name=display_name(r["sender_name"], self.store.uid_of(r["person_id"])),
             ))
         return out
 
@@ -226,6 +227,7 @@ class Pipeline:
             mentions_bot=p.mentions_bot, mentions_other=any(x != "bot" for x in p.mentions),
             reply_to=p.reply_to,
             reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
+            name=display_name(ev.sender_name, ev.sender_uid),
         ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
         reasons = {

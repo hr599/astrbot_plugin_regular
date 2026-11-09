@@ -55,6 +55,7 @@ class Msg:
     scene: str = ""  # bench only: independent scenario id; replay resets history between scenes
     media: list[str] = field(default_factory=list)
     mentions_other: bool = False  # @s someone (not 阿灯); only used to undo label sampling
+    name: str = ""  # the sender's group nickname, as model prompts show speakers (never the QQ id)
 
 
 @dataclass
@@ -64,6 +65,21 @@ class Decision:
     address_kind: str  # explicit | name | none
     reasons: dict[str, Any] = field(default_factory=dict)
     policy: str = POLICY_VERSION
+
+
+_DIGITS = re.compile(r"\d{5,12}")
+
+
+def display_name(name: str | None, uid: str | None = None) -> str:
+    """The group nickname, as model prompts may show it. When a member has neither a
+    group card nor a nickname, the OneBot parser falls back to their QQ number
+    (core/onebot.py) and that is stored as an alias; it isn't a name and must never
+    reach a model (PR #33 review). Old aliases hold the same fallback, so this runs
+    where names enter a Msg, not only at parse time."""
+    n = (name or "").strip()
+    if not n or (uid and n == str(uid).strip()) or _DIGITS.fullmatch(n):
+        return ""
+    return n
 
 
 def name_addressed(text: str, aliases: tuple[str, ...] = DEFAULT_ALIASES) -> bool:
