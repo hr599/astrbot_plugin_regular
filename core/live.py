@@ -180,7 +180,7 @@ class Speaker:
         direct = d.address_kind == "explicit"
         info: dict[str, Any] = {"action": d.action, "rule": rule, "direct": direct, "version": VERSION}
         if d.action == "react":
-            await self._react(scope_id, m, info, now)
+            await self._react(scope_id, m, info, now, still_on)
             return
         if d.action != "reply":
             self._trace(scope_id, m.msg_id, d.action, info)
@@ -224,9 +224,11 @@ class Speaker:
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)
 
-    async def _react(self, scope_id: str, m: Msg, info: dict[str, Any], now: int) -> None:
+    async def _react(self, scope_id: str, m: Msg, info: dict[str, Any], now: int, still_on) -> None:
         """An emoji on the turn's last message. No model call; a cap per group per
-        hour; never on a poke (nothing to react to) or another bot's message."""
+        hour; never on a poke (nothing to react to) or another bot's message; never
+        into a paused group, or once the turn's state changed (PR #37 review: the
+        outbox checks a pause for text, and reactions don't go through it)."""
         if m.kind != "message" or m.from_bot:
             info["skipped"] = "poke" if m.kind != "message" else "bot"
             self._trace(scope_id, m.msg_id, "react", info)
@@ -236,6 +238,14 @@ class Speaker:
         info["emoji"] = emoji
         if self.outbox.mode != "on" or self.react is None:
             info["dry"] = True  # dry: decided and traced, not sent
+            self._trace(scope_id, m.msg_id, "react", info)
+            return
+        if scope_id.rsplit(":", 1)[-1] in self.p.gate_cfg.paused_groups:
+            info["refused"] = "group paused"
+            self._trace(scope_id, m.msg_id, "react", info)
+            return
+        if not still_on():
+            info["refused"] = "recalled, forgotten or send mode changed"
             self._trace(scope_id, m.msg_id, "react", info)
             return
         if not self.rx_cap.take(scope_id, now):

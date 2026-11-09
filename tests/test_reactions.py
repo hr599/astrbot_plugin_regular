@@ -115,6 +115,40 @@ class LiveReactionTests(unittest.TestCase):
         self.assertEqual(len(w.reacted), 2)
         self.assertEqual(sum(1 for d, i in w.traces() if i.get("refused")), 2)
 
+    def test_no_reaction_into_a_group_paused_during_the_wait(self):
+        # PR #37 review: /reg pause during the 4 s pause; text goes through the outbox's
+        # pause check, reactions don't, so the speaker checks it itself
+        async def go(pause):
+            w = self.live()
+            w.post(1, "刚才看见阿灯了")
+            await asyncio.sleep(0.01)
+            if pause:
+                w.p.gate_cfg.paused_groups.add(SCOPE.rsplit(":", 1)[-1])
+            await w.settle()
+            return w
+        paused = asyncio.run(go(True))
+        self.assertEqual(paused.reacted, [])
+        self.assertEqual(paused.traces()[-1][1]["refused"], "group paused")
+        control = asyncio.run(go(False))
+        self.assertEqual(len(control.reacted), 1)
+
+    def test_no_reaction_after_a_mode_change_or_recall_during_the_wait(self):
+        for how in ("mode", "recall"):
+            with self.subTest(how=how):
+                async def go():
+                    w = self.live()
+                    w.post(1, "哈哈哈")
+                    await asyncio.sleep(0.01)
+                    if how == "mode":
+                        w.outbox.set_mode("dry")
+                        w.outbox.set_mode("on")
+                    else:
+                        w.store.recall(f"{SCOPE}:1")
+                    await w.settle()
+                    return w
+                w = asyncio.run(go())
+                self.assertEqual(w.reacted, [])
+
     def test_a_failed_reaction_is_just_quiet(self):
         async def go():
             w = self.live()
