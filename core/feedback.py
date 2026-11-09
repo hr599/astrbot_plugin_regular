@@ -44,17 +44,20 @@ def _to_bot(r, bot_ids: set[str], aliases) -> bool:
         or name_addressed(r["text"] or "", aliases)
 
 
-def _reacted(store, msg_ids: list[str]) -> bool:
+def _reacted(store, msg_ids: list[str], start: int, end: int) -> bool:
+    """A person (not another bot) put an emoji on what he said, within the window.
+    Same rules as text feedback (PR #36 review)."""
     if not msg_ids:
         return False
     q = ",".join("?" * len(msg_ids))
     for r in store.db.execute(
-            f"SELECT reasons FROM traces WHERE ended_at='gate' AND msg_id IN ({q})", msg_ids):
+            f"SELECT reasons FROM traces WHERE ended_at='gate' AND msg_id IN ({q}) AND ts>? AND ts<=?",
+            (*msg_ids, start, end)):
         try:
             d = json.loads(r["reasons"])
         except ValueError:
             continue
-        if d.get("notice") == "emoji_like" and d.get("is_add", True):
+        if d.get("notice") == "emoji_like" and d.get("is_add", True) and not d.get("from_bot"):
             return True
     return False
 
@@ -98,7 +101,7 @@ def run(store, scope_id: str, now: int, *, aliases=DEFAULT_ALIASES, bot_uids=fro
         after = [r for r in rows if start < r["ts"] <= start + WINDOW_S and human(r)]
         if any(_to_bot(r, ids, aliases) and RUDE.search(r["text"] or "") for r in after):
             should, why = "quiet", "pushback"
-        elif any(_to_bot(r, ids, aliases) for r in after) or _reacted(store, list(ids)):
+        elif any(_to_bot(r, ids, aliases) for r in after) or _reacted(store, list(ids), start, start + WINDOW_S):
             should, why = "reply", "engaged"
         elif after:
             should, why = "quiet", "ignored"

@@ -40,6 +40,8 @@ class Live:
         async def call(pid, system, prompt, params):
             self.prompts.append(prompt)
             a = self.answers.pop(0) if self.answers else "好的"
+            if callable(a):
+                a = a()  # something happens while the model "thinks"
             if isinstance(a, Exception):
                 raise a
             return json.dumps({"gist": "g", "reply": a}, ensure_ascii=False), Usage(input_other=500, output=20), "stop"
@@ -205,6 +207,105 @@ def chimed(store, target, bot_mid, dt, direct=False):
                       text="我也觉得", reply_to=f"{SCOPE}:{target}", is_bot=True)
 
 
+class Review36Tests(unittest.TestCase):
+    """PR #36 review: a turn in flight cancels itself; A-B-A keeps its middle."""
+
+    def real_delivery(self, w, between_parts=None):
+        """Deliver through core.outbox.deliver (can_send_part before every part)."""
+        from core.outbox import deliver as outbox_deliver
+        w.qq = []
+
+        async def send(gid, text):
+            w.qq.append(text)
+            if between_parts and len(w.qq) == 1:
+                between_parts()
+            return len(w.qq)
+
+        async def deliver(job):
+            await outbox_deliver(job, w.outbox, send=send,
+                                 record=lambda j, part, mid, ts, dry: w.p.record_own(j, part, mid, ts, dry, "aiocqhttp"),
+                                 paused=lambda: set(), clock=lambda: w.now, sleep=lambda s: asyncio.sleep(0))
+        w.speaker.deliver = deliver
+
+    def go(self, w, *posts):
+        async def run():
+            for p in posts:
+                w.post(*p)
+            await w.settle()
+        asyncio.run(run())
+
+    def test_recall_or_forget_while_composing_sends_nothing(self):
+        for how in ("recall", "forget"):
+            with self.subTest(how=how):
+                w = Live()
+                self.real_delivery(w)
+
+                def happen():
+                    if how == "recall":
+                        w.store.recall(f"{SCOPE}:1")
+                    else:
+                        w.store.forget_person("aiocqhttp", "20002", stop=True)
+                    return "在的"
+                w.answers = [happen]
+                self.go(w, (1, at_bot("在吗")))
+                self.assertEqual(w.qq, [])
+                self.assertEqual(w.traces()[-1][0], "cancelled")
+
+    def test_a_failed_first_try_isnt_retried_after_a_forget(self):
+        w = Live()
+        self.real_delivery(w)
+
+        def forget_and_fail():
+            w.store.forget_person("aiocqhttp", "20002", stop=True)
+            return RuntimeError("timeout")
+        w.answers = [forget_and_fail, "在的"]
+        self.go(w, (1, at_bot("在吗")))
+        self.assertEqual((len(w.prompts), w.qq), (1, []))
+
+    def test_a_mode_change_while_composing_cancels_the_turn(self):
+        for start, flips in (("dry", ["on"]), ("on", ["off", "on"])):
+            with self.subTest(start=start, flips=flips):
+                w = Live(mode=start)
+                self.real_delivery(w)
+
+                def flip():
+                    for f in flips:
+                        w.outbox.set_mode(f)
+                    return "在的"
+                w.answers = [flip]
+                self.go(w, (1, at_bot("在吗")))
+                self.assertEqual(w.qq, [])
+        for start in ("dry", "on"):  # control: nothing changes, it goes through as usual
+            with self.subTest(control=start):
+                w = Live(["在的"], mode=start)
+                self.real_delivery(w)
+                self.go(w, (1, at_bot("在吗")))
+                self.assertEqual(w.qq, ["在的"] if start == "on" else [])
+                self.assertEqual(w.traces()[-1][0], "reply")
+
+    def test_a_recall_between_parts_stops_the_rest(self):
+        w = Live(["好的\n马上来"])
+        self.real_delivery(w, between_parts=lambda: w.store.recall(f"{SCOPE}:1"))
+        self.go(w, (1, at_bot("在吗")))
+        self.assertEqual(w.qq, ["好的"])
+
+    def test_a_b_a_keeps_what_b_said(self):
+        async def run(w):
+            w.post(1, at_bot("帮我选个颜色"), name="小王")
+            await asyncio.sleep(0.01)
+            w.post(2, "红色已经没货，只有蓝色有货", uid="30003", name="小李")
+            await asyncio.sleep(0.01)
+            w.post(3, "那就选有货的那个吧", name="小王")
+            await w.settle()
+        w = Live(["那就蓝色"])
+        asyncio.run(run(w))
+        p = w.prompts[-1]
+        self.assertIn("小李：红色已经没货，只有蓝色有货", p)
+        self.assertLess(p.index("帮我选个颜色"), p.index("只有蓝色有货"))
+        self.assertLess(p.index("只有蓝色有货"), p.index("→ 小王"))
+        self.assertIn("→ 小王（@阿灯）：那就选有货的那个吧", p)  # still known to be for him
+
+
 class FeedbackTests(unittest.TestCase):
     def setUp(self):
         self.d = Path(tempfile.mkdtemp())
@@ -239,6 +340,21 @@ class FeedbackTests(unittest.TestCase):
                      reasons={"notice": "emoji_like", "is_add": True}, harness_version="t", ts=E + 20)
         self.run_fb()
         self.assertEqual(self.s.auto_labels()[f"{SCOPE}:1"]["reason"], "engaged")
+
+    def test_reactions_from_bots_or_too_late_dont_count(self):
+        # PR #36 review: the same rules as text feedback
+        for bot, dt in ((True, 20), (False, 600)):
+            with self.subTest(bot=bot, dt=dt):
+                d = Path(tempfile.mkdtemp())
+                s = Store(d / "regular.db")
+                p = Pipeline(s, GateConfig(group_ids={GROUP}))
+                seed(s, p, [(1, "20002", "看我拍的", 0), (3, "30003", "周末呢", 100)])
+                chimed(s, 1, 2, 10)
+                s.trace(scope_id=SCOPE, msg_id=f"{SCOPE}:2", ended_at="gate", decision=None,
+                        reasons={"notice": "emoji_like", "is_add": True, "from_bot": bot},
+                        harness_version="t", ts=E + dt)
+                feedback.run(s, SCOPE, E + 3600, aliases=("阿灯",))
+                self.assertEqual(s.auto_labels()[f"{SCOPE}:1"]["reason"], "ignored")
 
     def test_answering_an_at_teaches_nothing(self):
         seed(self.s, self.p, [(1, "20002", at_bot("在吗"), 0), (3, "30003", "嗯", 30)])
@@ -282,6 +398,23 @@ class FeedbackTests(unittest.TestCase):
         self.assertGreater(sum(1 for k in rec.labels if is_test(k)), 0)  # some fall in the held-out bucket...
         self.assertIsNone(m["held_out"])                                  # ...yet none are held out
         self.assertIsNone(m["implied"])                                   # and they don't feed the rate estimate
+
+
+class DedupeTests(unittest.TestCase):
+    def test_a_hand_label_beats_an_older_saved_auto_label(self):
+        from bench.situations import Recording
+        from bench.tune import dedupe
+        from core.decide import Msg
+        msgs = [Msg("m1", E, "p", "有人会blender吗")]
+        old = Recording("week-20261101", "saved", msgs, {"m1": {"addressed": False, "should": "reply",
+                                                               "source": "auto", "reason": "missed"}})
+        new = Recording("week-20261102", "saved", msgs, {"m1": {"addressed": False, "should": "quiet"}})
+        out = dedupe([old, new])
+        labels = {k: v for r in out for k, v in r.labels.items()}
+        self.assertEqual(labels["m1"]["should"], "quiet")
+        self.assertNotIn("source", labels["m1"])
+        both_auto = dedupe([old, Recording("x", "saved", msgs, dict(old.labels))])
+        self.assertEqual(sum(len(r.labels) for r in both_auto), 1)
 
 
 if __name__ == "__main__":
