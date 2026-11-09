@@ -23,7 +23,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 from .compose import compose
@@ -125,15 +125,38 @@ class Speaker:
         parts = [m for m in msgs if m.msg_id in ids and m.text]
         if not parts:
             return None, []
-        first = msgs.index(parts[0])
+        first, last = msgs.index(parts[0]), msgs.index(parts[-1])
+        between = [x for x in msgs[first:last] if x.msg_id not in ids and x.kind == "message"]
+        if between:
+            # someone else spoke inside the turn (A-B-A): keep the real order. The
+            # target is the last part, carrying the whole turn's @/quote flags; the
+            # earlier parts and what others said stay in the context (PR #36 review)
+            whole = merged_msg(parts)
+            target = replace(parts[-1], mentions_bot=whole.mentions_bot, reply_to_bot=whole.reply_to_bot,
+                             reply_to=parts[-1].reply_to or whole.reply_to)
+            return target, msgs[:last][-CONTEXT:]
         return merged_msg(parts), msgs[:first][-CONTEXT:]
 
     async def _speak(self, scope_id: str, turn: list) -> None:
         if self.outbox.mode == "off":
             return
+        # everything this turn may do was decided now: the store's forget generation
+        # and the outbox's mode/generation. A recall, forget or mode change while it
+        # waits on the model cancels it; it never re-authorises itself (PR #36 review)
+        store = self.p.store
+        gen = getattr(store, "cache_gen", 0)
+        mode, ogen = self.outbox.mode, self.outbox.gen
         m, ctx = self._moments(scope_id, turn)
         if m is None:
             return  # recalled or forgotten during the pause
+
+        def still_valid() -> bool:
+            if getattr(store, "cache_gen", 0) != gen:
+                return False
+            return m.kind != "message" or store.message_live(m.msg_id)
+
+        def still_on() -> bool:
+            return still_valid() and self.outbox.mode == mode and self.outbox.gen == ogen
         now = int(self.clock())
         st = self.p._limit_state(scope_id, now, m.msg_id)
         params = self.p.params
@@ -149,10 +172,14 @@ class Speaker:
             return
         rhythm = rhythm_state(now, (params or {}).get("_windows", []))
         c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm,
-                          group_p90_len=self._group_p90(scope_id), rng=self.rng)
-        if c.outcome == "failed" and direct:  # an @ gets one retry
+                          group_p90_len=self._group_p90(scope_id), rng=self.rng, gen=gen, alive=still_on)
+        if c.outcome == "failed" and direct and still_on():  # an @ gets one retry, same gen
             c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm,
-                              group_p90_len=self._group_p90(scope_id), rng=self.rng)
+                              group_p90_len=self._group_p90(scope_id), rng=self.rng, gen=gen, alive=still_on)
+        if not still_on() or c.outcome == "forgotten":
+            info["cancelled"] = "recalled, forgotten or send mode changed while composing"
+            self._trace(scope_id, m.msg_id, "cancelled", info)
+            return
         info.update({"outcome": c.outcome, "attempts": c.attempts, "hits": sorted(set(c.hits)),
                      "cost": round(c.cost, 6)})
         if c.error:
@@ -177,6 +204,7 @@ class Speaker:
             self.outbox.queue.remove(prep.job)
         except ValueError:
             pass
+        prep.job.still_valid = still_valid  # and before every part it sends
         info["parts"] = len(prep.job.parts)
         self._trace(scope_id, m.msg_id, "reply", info)
         await self.deliver(prep.job)

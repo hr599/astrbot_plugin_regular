@@ -274,6 +274,10 @@ class Store:
             (*scope_ids, before_ts, limit),
         ).fetchall()
 
+    def message_live(self, msg_id: str) -> bool:
+        """Still stored and not recalled (forget and retention delete the row)."""
+        return bool(self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone())
+
     def people_with_uids(self, uids) -> list[int]:
         uids = [str(u) for u in uids]
         if not uids:
