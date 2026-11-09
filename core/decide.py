@@ -55,6 +55,7 @@ class Msg:
     scene: str = ""  # bench only: independent scenario id; replay resets history between scenes
     media: list[str] = field(default_factory=list)
     mentions_other: bool = False  # @s someone (not 阿灯); only used to undo label sampling
+    name: str = ""  # the sender's group nickname, as model prompts show speakers (never the QQ id)
 
 
 @dataclass

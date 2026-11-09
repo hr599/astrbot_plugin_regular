@@ -128,7 +128,7 @@ def load_fixture(path: Path) -> Recording:
         else:
             ts = base + int(d.get("t", i * 20))
         msgs.append(Msg(
-            msg_id=mid, ts=ts, sender=d.get("from", "?"),
+            msg_id=mid, ts=ts, sender=d.get("from", "?"), name=d.get("from", ""),
             text=d.get("text", "[戳一戳]" if kind == "poke" else ""), kind=kind,
             mentions_bot=bool(d.get("at_bot")), reply_to=d.get("quote"),
             reply_to_bot=d.get("quote") in bot_ids, poke_bot=bool(d.get("poke_bot")),

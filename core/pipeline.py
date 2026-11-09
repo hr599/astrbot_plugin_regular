@@ -64,6 +64,7 @@ class Pipeline:
                 mentions_other=any(x != "bot" for x in mentions),
                 reply_to=r["reply_to"], reply_to_bot=bool(r["reply_to_bot"]), is_bot=bool(r["is_bot"]),
                 from_bot=self.store.uid_of(r["person_id"]) in self.gate_cfg.bot_uids,
+                name=r["sender_name"] or "",
             ))
         return out
 
@@ -225,7 +226,7 @@ class Pipeline:
             msg_id=ev.msg_id, ts=ev.ts, sender=str(pid), text=p.text,
             mentions_bot=p.mentions_bot, mentions_other=any(x != "bot" for x in p.mentions),
             reply_to=p.reply_to,
-            reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds,
+            reply_to_bot=reply_to_bot, from_bot=from_bot, media=p.media_kinds, name=ev.sender_name or "",
         ), ev.scope_id, observe=stored)  # a platform re-delivery isn't a second @
         signals = self._signals(ev, p, pid, reply_to_bot, from_bot) if stored else None
         reasons = {

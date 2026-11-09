@@ -70,7 +70,8 @@ def write_html(rows: list[tuple[str, Any]], folder: Path, stamp: str) -> Path:
                    + (f" · {_e(', '.join(c.hits))}" if c.hits else "") + "</h3>")
         out.append(f"<pre>{_e(chat)}</pre>")
         for i, d in enumerate(c.drafts):
-            out.append(f"<div>第 {i + 1} 版：<pre>{_e(d)}</pre></div>")
+            g = c.gists[i] if i < len(c.gists) else ""
+            out.append(f"<div>第 {i + 1} 版" + (f"（它的理解：{_e(g)}）" if g else "") + f"：<pre>{_e(d)}</pre></div>")
         if c.parts:
             out.append("<div>发出去会是：<pre>" + _e("\n".join(f"[{t:.1f}s] {p}" for p, t in zip(c.parts, c.delays)))
                        + "</pre></div>")
