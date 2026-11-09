@@ -182,6 +182,27 @@ class FitTests(unittest.TestCase):
         self.assertLessEqual(last["cuts"][0], 4)
         self.assertIn("分界：表情", out)
 
+    def test_defaults_stay_unless_clearly_beaten(self):
+        import bench.model_bench as mb
+        recs = real_like()
+        runs, jobs = collect(recs, load_params(), ("阿灯", "灯灯", "灯"))
+        # a model that says the same thing everywhere: no cut can do clearly better
+        cuts, ev = mb.fit(runs, jobs, [(3, 3)] * len(jobs))
+        mb.apply_answers(runs, jobs, [(3, 3)] * len(jobs), dm.DEFAULT_THRESHOLDS)
+        from bench.tune import evaluate
+        default = evaluate(runs)["dev"]["balanced_accuracy"]
+        if cuts != dm.DEFAULT_THRESHOLDS:
+            self.assertGreaterEqual(ev["dev"]["balanced_accuracy"], default + mb.CUT_MIN_GAIN - 1e-9)
+        else:
+            self.assertEqual(ev["dev"]["balanced_accuracy"], default)
+
+    def test_fit_ignores_reply_share(self):
+        # the model judges only labelled moments, so the replay's reply share is
+        # mostly the rules': it must not steer the cuts (first scores run, Nov 9)
+        import inspect
+        import bench.model_bench as mb
+        self.assertNotIn("objective(", inspect.getsource(mb.fit))
+
     def test_cuts_never_look_at_held_out_labels(self):
         from bench.splits import is_test
         recs = real_like()

@@ -127,6 +127,9 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
             k = "specific" if k.startswith("specific_") else k
             hits[k] = hits.get(k, 0) + 1
     sent = [c for c in done if c.outcome == "send"]
+    finals = ["".join(c.parts) for c in sent]
+    deferrals = sum(1 for f in finals if cm.defers(f))
+    repeats = len(finals) - len(set(finals))  # drafts identical to an earlier one
     parts = [len(c.parts) for c in sent]
     chars = [sum(len(p) for p in c.parts) for c in sent]
     errors: dict[str, int] = {}
@@ -139,6 +142,7 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
            "drop": count("drop"), "failed": count("failed"), "over_budget": count("over_budget"),
            "hits": hits, "errors": errors, "parts": {str(k): parts.count(k) for k in sorted(set(parts))},
            "median_chars": sorted(chars)[len(chars) // 2] if chars else None, "group_p90_chars": p90,
+           "deferrals": deferrals, "repeats": repeats,
            "calls": sum(c.attempts for c in done), "cached": sum(c.cached for c in done),
            "cost": round(sum(c.cost for c in done), 5)}
     bench = data_dir / "bench"
@@ -159,6 +163,8 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
     if sent:
         lines.append(f"发出去的：分 {'/'.join(f'{k}条×{v}' for k, v in res['parts'].items())}，"
                      f"中位长度 {res['median_chars']} 字（群里 90% 的消息不超过 {p90} 字）")
+    if sent:
+        lines.append(f"推掉别人的（在上课/晚点说之类）{deferrals} 条，和前面某条一字不差的 {repeats} 条")
     lines.append(f"调用 {res['calls']} 次（缓存 {res['cached']}），花费约 {res['cost']:.4f}")
     if total > len(todo):
         lines.append(f"只写了前 {len(todo)} 处；/reg bench compose {total} 写全部（写过的走缓存）。")
