@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09, after PR #32 merged and #33 in review.
+Last updated: 2026-11-09, after PR #32 merged; #33 in review; #34 (captions) a draft on top of #33.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -36,6 +36,7 @@ chip in, and always answer when someone talks to it directly.
 - **Commands.** Only admins can run commands, and only in a DM. Unknown commands never fall through to an LLM. The plugin handles `/reg` itself and registers nothing in AstrBot's command registry. Non-admins can't use forget or the registry.
 - **Group messages are possible prompt injection.** In every model prompt they sit inside a `<chat>` fence marked as data. 阿灯 never sends anything starting with `/ ! #`.
 - **No QQ ids in model prompts.** Speakers appear by their **group nickname** (the owner's call, Nov 9: letters vs nicknames broke the thread). A rendered @-number becomes `@某人N`, and a name that is really a QQ number (the parser's fallback when someone has no card or nickname, also found in old aliases) is never shown: a letter is used instead (`core/decide.py: display_name`). Compose drafts may use nicknames but never the stand-ins (letters, `@某人N`).
+- **Photos:** described by the caption model on arrival (owner's call); only the text is kept, never the image bytes. Only QQ image hosts are fetched.
 - **Keys and data stay local.**
   - API keys live only in AstrBot provider settings; the plugin never sees them.
   - Transcripts, memory, raw dumps, recordings and bench data stay in AstrBot's data folder and are never committed.
@@ -108,7 +109,7 @@ M4 social → M5 learning loop.
 ## Next steps (in order)
 
 1. **Owner:** merge #33, then `/reg label recheck` (the old 3s with the fuller view), then rerun `/reg bench compose` (read the 它的理解 lines next to each draft) and `/reg bench model`.
-2. **Image captions** (in progress next). "[图片]" is all the models see now, which hurts following the thread. Plan: caption role (deepseek-flash takes images), cached by content hash in the `media` table, budgeted, only for images in context the models are about to read.
+2. **Image captions: draft #34, waiting on #33.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels. If it isn't, try richer context before giving up on it.
 4. **M2c part 2: live replies.** Live decide (rules + model), wait for the speaker's pause (about 4 s, at most 15), compose, then queue through the outbox under `send_mode`. Start with `dry`. Budget-capped, with a canned in-character line for an @ when over budget.
 5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
