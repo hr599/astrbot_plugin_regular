@@ -4,7 +4,7 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09 afternoon: #33 merged; #34 (captions) and #35 (format + fit fixes) in review.
+Last updated: 2026-11-09 afternoon: #33 merged; #34 (captions), #35 (format + fit fixes) and #36 (live replies + automatic labels) in review.
 
 **Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
@@ -109,12 +109,17 @@ M4 social → M5 learning loop.
   - Compose: the gists show it now reads mockery and jokes correctly (cases 4, 7–9), and there are no brush-offs or repeats. But 19 of 30 first drafts failed the format check: a two-line reply puts a raw line break inside the JSON string. Fixed in #35.
   - Model: held-out 32% (default cuts) and 45.6% (fitted 5/2). The fitted cuts reply to about half of all labeled moments, and react recall is 0. #35 limits fitted cuts to the labeled reply rate +10 points. The model is still not shown to beat the tuned rules (41%).
 
+- **#36, in review: live replies and learning from the group.** The owner's calls (Nov 9): he's doing well enough, go live straight into the group; answer when talked to, plus rule-based chime-ins; learn when to jump in fully automatically (no rating DMs).
+  - `core/live.py`: pause (4 s / max 15) → decide the merged turn (M2 rules) → compose → outbox → deliver under a per-group lock. One retry on an @'s model error; a canned line over budget. Nothing happens unless `send_mode` is `on` (or `dry`).
+  - `core/feedback.py`, every 5 min: after a chime-in, engaged → reply, ignored or pushed back → quiet; an unanswered group question → reply. Schema v6 `auto_labels`; dev side only, never held out, never in the implied rate; hand labels win.
+  - Not yet: emoji reactions, the crisis DM to the owner, waiting for a photo's caption. **After #34 and #36 both merge:** `core/decide.py: merged_msg` must also merge `captions` (left out because #34 adds the field).
+
 ## Next steps (in order)
 
-1. **Owner:** review/merge #34 (captions; mark it "Ready for review" on GitHub, since REST can't) and #35; `/reg label recheck` (the old 3s with the fuller view); then rerun `/reg bench compose` (read the 它的理解 lines) and `/reg bench model`.
+1. **Owner:** review/merge #34 (captions; mark it "Ready for review" on GitHub, since REST can't), #35 and #36; then `/reg bench tune apply` if wanted, and `/reg send on` to go live. Watch `/reg status` (`mode`, `captions`, `learning`). `/reg label recheck` when there's time.
 2. **Image captions: #34, in review.** The owner's calls (Nov 9): every photo is described on arrival, and only the caption text plus a content hash are kept, never the image. Captions never name people and mask long digit runs; they're deleted with their message (recall, forget, retention). `caption_images` config, default on. **To check on the live account:** that LLBot's image segment carries a QQ-host `data.url`, and that deepseek-flash accepts the `image_url` part (`/reg status` → `captions`).
 3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels, without over-replying. Reactions are the weak spot for both rules and model (react recall about 0–20%). If the model doesn't clearly win, keep the rules for when to speak and use the model only for compose.
-4. **M2c part 2: live replies.** Live decide (rules + model), wait for the speaker's pause (about 4 s, at most 15), compose, then queue through the outbox under `send_mode`. Start with `dry`. Budget-capped, with a canned in-character line for an @ when over budget.
+4. **After going live:** a numbers-only check of the first days (replies per day, engaged vs ignored, missed questions, cost). Then retune with the automatic labels, and add emoji reactions, the crisis DM to the owner, and waiting for captions.
 5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
 6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
 7. **M2d:** a deepseek-flash vs deepseek-v4-pro reply bake-off, then a blind test.
