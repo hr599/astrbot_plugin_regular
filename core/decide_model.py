@@ -133,28 +133,39 @@ def _line(m: Msg, names: dict[str, str], ids: dict[str, str], by_id: dict[str, M
     return f"{who}{tag}：{_clip(_hide_ids(with_captions(m.text or '', m.captions), ids)) or '[空]'}"
 
 
-def render_chat(m: Msg, context: list[Msg], n: int = CONTEXT_LINES) -> str:
+def render_chat(m: Msg, context: list[Msg], n: int = CONTEXT_LINES, earlier: list[Msg] = ()) -> str:
     """The last n messages and the target (marked →), speakers as letters, @-numbers
-    hidden, fenced in <chat> (shared by decide and compose)."""
-    return _render(m, context, n)[0]
+    hidden, fenced in <chat> (shared by decide and compose). earlier: older lines
+    from today that the target picks up (core/recall), shown first in their own
+    <earlier> block, with the same names."""
+    return _render(m, context, n, earlier)[0]
 
 
-def speaker_letters(m: Msg, context: list[Msg], n: int = CONTEXT_LINES) -> set[str]:
+def speaker_letters(m: Msg, context: list[Msg], n: int = CONTEXT_LINES, earlier: list[Msg] = ()) -> set[str]:
     """The fallback letters render_chat used for people without a name (compose:
     those must never go out; real nicknames may)."""
-    return {v for v in _render(m, context, n)[1].values() if re.fullmatch(r"[A-Z]", v)}
+    return {v for v in _render(m, context, n, earlier)[1].values() if re.fullmatch(r"[A-Z]", v)}
 
 
-def _render(m: Msg, context: list[Msg], n: int) -> tuple[str, dict[str, str]]:
+def _render(m: Msg, context: list[Msg], n: int, earlier: list[Msg] = ()) -> tuple[str, dict[str, str]]:
     names: dict[str, str] = {}
     ids: dict[str, str] = {}
     full = [c for c in context if c.msg_id != m.msg_id]
-    by_id = {c.msg_id: c for c in full}  # quotes resolve against everything handed in
+    by_id = {c.msg_id: c for c in list(earlier) + full}  # quotes resolve against everything handed in
     ctx = full[-n:]
+    old = ""
+    if earlier:
+        rows = [f"[{_hm(c.ts)}] " + _line(c, names, ids, by_id) for c in earlier]
+        old = "<earlier>\n" + "\n".join(rows).replace("</earlier>", "<\\/earlier>").replace(
+            "</chat>", "<\\/chat>") + "\n</earlier>\n"
     lines = [_line(c, names, ids, by_id) for c in ctx]
     target = "→ " + _line(m, names, ids, by_id)
     chat = "\n".join(lines + [target]).replace("</chat>", "<\\/chat>")
-    return f"<chat>\n{chat}\n</chat>", names
+    return f"{old}<chat>\n{chat}\n</chat>", names
+
+
+def _hm(ts: int) -> str:
+    return datetime.fromtimestamp(ts + 8 * 3600, tz=timezone.utc).strftime("%H:%M")
 
 
 RHYTHM_WORDS = {"class": "在上课", "free": "有空", "night_owl": "夜猫子时间，最活跃", "asleep": "在睡觉"}
