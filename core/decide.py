@@ -68,6 +68,37 @@ class Decision:
     policy: str = POLICY_VERSION
 
 
+def merged_msg(ms: list[Msg]) -> Msg:
+    """One turn as one moment: the last message, with the whole turn's text and any
+    @ / quote / media / captions from any part of it (the bench and live replies)."""
+    last = ms[-1]
+    if len(ms) == 1:
+        return last
+    return Msg(
+        msg_id=last.msg_id, ts=last.ts, sender=last.sender, text="\n".join(m.text for m in ms if m.text),
+        kind=last.kind, mentions_bot=any(m.mentions_bot for m in ms),
+        reply_to=next((m.reply_to for m in ms if m.reply_to), None),
+        reply_to_bot=any(m.reply_to_bot for m in ms), poke_bot=any(m.poke_bot for m in ms),
+        is_bot=last.is_bot, from_bot=last.from_bot, scene=last.scene,
+        media=[x for m in ms for x in (m.media or [])], mentions_other=any(m.mentions_other for m in ms),
+        name=last.name,
+        captions=merged_captions(ms),  # PR #34 review: photo, then a line about it
+    )
+
+
+def merged_captions(ms: list[Msg]) -> list:
+    """The turn's captions, one slot per [图片] in the joined text, in order, so each
+    stays on its own photo even when one in the middle wasn't described."""
+    out: list = []
+    for m in ms:
+        if not m.text:
+            continue
+        n = m.text.count("[图片]")
+        caps = list(m.captions or [])[:n]
+        out += caps + [None] * (n - len(caps))
+    return out if any(out) else []
+
+
 _DIGITS = re.compile(r"\d{5,12}")
 
 

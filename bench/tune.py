@@ -64,11 +64,16 @@ def put(p: dict[str, Any], path: str, v: Any) -> dict[str, Any]:
 
 
 def dedupe(recs: list[Recording]) -> list[Recording]:
-    """A saved recording can overlap the live store; count each label once."""
+    """A saved recording can overlap the live store; count each label once. A hand
+    label beats an automatic one wherever either appears (an old saved recording's
+    auto label must not undo a later correction, PR #36 review); otherwise the
+    first one seen wins."""
+    human = {k for r in recs for k, v in r.labels.items() if v.get("source") != "auto"}
     seen: set[str] = set()
     out = []
     for r in recs:
-        labels = {k: v for k, v in r.labels.items() if k not in seen}
+        labels = {k: v for k, v in r.labels.items()
+                  if k not in seen and (v.get("source") != "auto" or k not in human)}
         seen |= set(labels)
         if labels:
             out.append(Recording(r.name, r.source, r.messages, labels, r.meta))

@@ -17,7 +17,7 @@ try:  # inside the plugin package
 except ImportError:  # repo root on sys.path (tests, CLI)
     from core.perceive import is_command_like as _is_command_like
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # v2 (M1): your labels for bench moments (kept apart from transcripts; a label goes
 # when its message is purged or recalled, unless it was saved into a recording), and
@@ -66,6 +66,20 @@ MIGRATIONS = {
     5: """
     ALTER TABLE model_calls ADD COLUMN finish_reason TEXT;
     ALTER TABLE model_calls ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0;
+    """,
+    # v6 (live replies): labels the group gives by how it reacts, kept apart from
+    # yours. A moment 阿灯 chimed in on that got engaged with -> reply; ignored or
+    # pushed back -> quiet; a question to the group nobody answered -> reply.
+    # They tune decide (dev side only) and never enter held-out. A row goes with
+    # its message (forget, retention, recall), and your own label always wins.
+    6: """
+    CREATE TABLE auto_labels (
+      msg_id   TEXT PRIMARY KEY REFERENCES messages ON DELETE CASCADE,
+      scope_id TEXT NOT NULL,
+      should   TEXT NOT NULL CHECK (should IN ('quiet', 'react', 'reply')),
+      reason   TEXT NOT NULL,
+      created  INTEGER NOT NULL
+    );
     """,
 }
 SESSION_GAP_S = 30 * 60  # a pause this long starts a new session
@@ -261,6 +275,32 @@ class Store:
                 ORDER BY m.ts ASC LIMIT ?""",
             (*scope_ids, before_ts, limit),
         ).fetchall()
+
+    def people_with_uids(self, uids) -> list[int]:
+        uids = [str(u) for u in uids]
+        if not uids:
+            return []
+        q = ",".join("?" * len(uids))
+        return [r[0] for r in self.db.execute(f"SELECT person_id FROM people WHERE platform_uid IN ({q})", uids)]
+
+    def set_auto_label(self, msg_id: str, scope_id: str, should: str, reason: str, now: int) -> bool:
+        """An automatic label from how the group reacted. Never over one of yours,
+        never twice for one moment. False if nothing was written."""
+        if self.db.execute("SELECT 1 FROM labels WHERE msg_id=?", (msg_id,)).fetchone():
+            return False
+        if not self.db.execute("SELECT 1 FROM messages WHERE msg_id=? AND recalled=0", (msg_id,)).fetchone():
+            return False
+        cur = self.db.execute(
+            "INSERT OR IGNORE INTO auto_labels (msg_id, scope_id, should, reason, created) VALUES (?,?,?,?,?)",
+            (msg_id, scope_id, should, reason, now))
+        return bool(cur.rowcount)
+
+    def auto_labels(self, scope_id: str | None = None) -> dict[str, dict[str, Any]]:
+        sql, args = "SELECT * FROM auto_labels", ()
+        if scope_id is not None:
+            sql, args = sql + " WHERE scope_id=?", (scope_id,)
+        return {r["msg_id"]: {"addressed": False, "should": r["should"], "source": "auto", "reason": r["reason"]}
+                for r in self.db.execute(sql, args)}
 
     def labels(self) -> dict[str, dict[str, Any]]:
         return {
@@ -458,6 +498,7 @@ class Store:
         self.purge_orphan_media()  # a recalled photo's caption goes with it
         self.db.execute("DELETE FROM labels WHERE msg_id=?", (msg_id,))
         self.db.execute("DELETE FROM label_skips WHERE msg_id=?", (msg_id,))
+        self.db.execute("DELETE FROM auto_labels WHERE msg_id=?", (msg_id,))
         return True
 
     def search(self, scope_id: str, query: str, limit: int = 20) -> list[sqlite3.Row]:
@@ -512,7 +553,7 @@ class Store:
             (cutoff_ts,),
         )
         self.purge_orphan_media()
-        for t in ("labels", "label_skips"):
+        for t in ("labels", "label_skips", "auto_labels"):
             self.db.execute(
                 f"DELETE FROM {t} WHERE msg_id IN (SELECT msg_id FROM messages WHERE ts<?)", (cutoff_ts,)
             )
@@ -599,7 +640,7 @@ class Store:
                     db.execute("INSERT INTO messages_fts (messages_fts, rowid, text) VALUES ('delete', ?, ?)",
                                (r["rowid"], r["text"]))
             sub = "(SELECT msg_id FROM messages WHERE person_id=?)"
-            for t in ("message_media", "labels", "label_skips", "traces", "episode_evidence"):
+            for t in ("message_media", "labels", "label_skips", "auto_labels", "traces", "episode_evidence"):
                 db.execute(f"DELETE FROM {t} WHERE msg_id IN {sub}", (pid,))
             self.purge_orphan_media()  # captions of their photos (unless someone else posted the same one)
             # memory: claims about them, then evidence quoting them in claims about others
@@ -694,6 +735,7 @@ class Store:
             "traces_24h": q("SELECT COUNT(*) FROM traces WHERE ts>=?", day),
             "labels": q("SELECT COUNT(*) FROM labels"),
             "schema_version": q("PRAGMA user_version"),
+            "auto_labels": q("SELECT COUNT(*) FROM auto_labels"),
         }
 
 

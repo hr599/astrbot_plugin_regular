@@ -48,6 +48,10 @@ def from_store(store, scope_id: str, *, since_ts: int = 0, until_ts: int | None 
     msgs = stored_moments(store, scope_id, since_ts, until_ts, bot_uids=bot_uids)
     ids = {m.msg_id for m in msgs}
     labels = {k: v for k, v in store.labels().items() if k in ids}
+    if hasattr(store, "auto_labels"):  # the group's reactions (live replies); yours always win
+        for k, v in store.auto_labels(scope_id).items():
+            if k in ids and k not in labels:
+                labels[k] = v
     return Recording(name, "store", msgs, labels,
                      {"scope": scope_id, "since": since_ts, "until": until_ts})
 
