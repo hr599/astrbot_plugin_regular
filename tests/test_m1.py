@@ -23,7 +23,7 @@ from bench.situations import Recording, from_store, load_fixtures, load_saved, s
 from core.admin import AdminCommands
 from core.decide import Msg, decide, name_addressed
 from core.gate import GateConfig
-from core.labeling import Labeler, parse_answers, tier
+from core.labeling import GUIDE, Labeler, parse_answers, tier
 from core.onebot import reply_sender
 from core.pipeline import Pipeline
 from services.debug import build_bundle
@@ -712,3 +712,59 @@ class BenchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LabelingViewTests(unittest.TestCase):
+    """Nov 9 compose drafts: the reply labels ran in long streaks inside one thread and
+    included replies meant for someone else. The labeler saw 3 lines of context and
+    couldn't see quotes."""
+
+    def setUp(self):
+        self.s = Store(":memory:")
+        self.p = Pipeline(self.s, GateConfig(group_ids={GROUP}))
+        now = int(time.time())
+        self.now = now
+        texts = ["今晚吃啥", "火锅？", "太贵了", "那烤冷面", "行吧", "我不去", "为啥", "没钱", "哈哈", "笑死"]
+        for i, t in enumerate(texts):
+            self.p.handle(ev(group_msg(t, uid=str(20000 + i % 2), mid=i + 1, ts=now - 300 + i * 10,
+                                       name="小王" if i % 2 == 0 else "小李")))
+        quote = [{"type": "reply", "data": {"id": "3"}}, {"type": "text", "data": {"text": "你说谁贵"}}]
+        self.p.handle(ev(group_msg(quote, uid="20002", mid=11, ts=now - 150, name="小张")))
+
+    def test_more_context_and_quotes_shown(self):
+        lab = Labeler(self.s, rng=random.Random(0), batch=1)
+        self.assertEqual(lab.context, 8)
+        rows = self.s.before(f"{SCOPE}:11", 1)
+        self.assertTrue(rows)
+        line = lab._line(self.s.db.execute("SELECT m.*, NULL AS sender_name FROM messages m WHERE msg_id=?",
+                                           (f"{SCOPE}:11",)).fetchone(), " → ")
+        self.assertIn("（回复 小王）", line)
+        self.assertIn("说给别人的", GUIDE)
+
+    def test_earlier_3s_are_flagged_in_the_context(self):
+        self.s.set_label(f"{SCOPE}:9", False, "reply")
+        lab = Labeler(self.s, rng=random.Random(0))
+        out = "\n".join(lab._blocks([self.s.db.execute(
+            "SELECT m.*, NULL AS sender_name FROM messages m WHERE msg_id=?", (f"{SCOPE}:10",)).fetchone()], False))
+        self.assertIn("哈哈   ← 你让阿灯说话了", out)
+        self.assertNotIn("笑死   ← ", out)  # the target itself isn't flagged
+
+    def test_recheck_goes_through_old_3s_once(self):
+        old = self.now - 1000
+        for mid in (2, 4, 6):
+            self.s.set_label(f"{SCOPE}:{mid}", False, "reply", ts=old)
+        self.s.set_label(f"{SCOPE}:5", False, "quiet", ts=old)
+        lab = Labeler(self.s, rng=random.Random(0), batch=2)
+        first = lab.answer("recheck")
+        self.assertIn("复查", first)
+        self.assertIn("还剩 3 条", first)
+        self.assertEqual(lab.pending, [f"{SCOPE}:2", f"{SCOPE}:4"])
+        nxt = lab.answer("5 s")  # change one to quiet, keep one
+        self.assertEqual(self.s.labels()[f"{SCOPE}:2"]["should"], "quiet")
+        self.assertEqual(self.s.labels()[f"{SCOPE}:4"]["should"], "reply")
+        self.assertIn("还剩 1 条", nxt)
+        self.assertEqual(lab.pending, [f"{SCOPE}:6"])
+        done = lab.answer("3")
+        self.assertIn("都复查完了", done)
+        # back to normal labeling afterwards
+        self.assertNotIn("复查以前", lab.next())

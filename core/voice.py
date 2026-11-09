@@ -287,6 +287,19 @@ def _known(context: str) -> set[str]:
     return known
 
 
+_SAID = re.compile(r"(说|讲|问|写|喊|骂|回|原话|原文|说过|写着|发了|发的)[了过的是]{0,2}[：:，,\s]*$")
+QUOTE_LONG = 12  # a quote this long reads as someone's words even without 说
+
+
+def _attributed(text: str, m: re.Match) -> bool:
+    """Is this quote presented as someone's words? A speech verb right before it
+    (他说"…"), or long enough to be a sentence someone said. Short quoted terms and
+    questions are emphasis, not quotes (first compose run, Nov 9: two good drafts
+    dropped for quoting "该不该说话")."""
+    before = text[max(0, m.start() - 6):m.start()]
+    return bool(_SAID.search(before)) or len(re.sub(r"\s+", "", m.group(1))) >= QUOTE_LONG
+
+
 def made_up_specifics(text: str, context: str) -> list[Hit]:
     """Exact numbers, dates, times, prices and quotes that appear in neither the
     context (thread + injected memory) nor elsewhere in what it was given.
@@ -302,6 +315,8 @@ def made_up_specifics(text: str, context: str) -> list[Hit]:
             out.append(Hit(f"specific_{kind}", tok))
     flat = re.sub(r"\s+", "", ctx)
     for m in _QUOTE.finditer(t):
+        if not _attributed(t, m):
+            continue  # a term or a question in quotes ("该不该说话") isn't a quote of anyone
         if re.sub(r"\s+", "", m.group(1)) not in flat:
             out.append(Hit("specific_quote", m.group(1)[:20]))
     return out

@@ -19,6 +19,14 @@ from services.store import Store
 E = 1_793_451_600  # Sat 21:00 UTC+8
 
 
+def wrap(a: str) -> str:
+    """The reply as compose asks for it: one JSON line with its read of the room.
+    RAW: sends the text as is (format tests)."""
+    if a.startswith("RAW:"):
+        return a[4:]
+    return json.dumps({"gist": "大家在聊吃什么", "reply": a}, ensure_ascii=False)
+
+
 def client_for(script, data_dir: Path, monthly=30):
     """script: list of answers (str, or an Exception to raise, or ('length', text))."""
     store = Store(data_dir / "regular.db")
@@ -31,8 +39,8 @@ def client_for(script, data_dir: Path, monthly=30):
         if isinstance(a, Exception):
             raise a
         if isinstance(a, tuple):
-            return a[1], Usage(input_other=800, output=40), a[0]
-        return a, Usage(input_other=800, output=20), "stop"
+            return wrap(a[1]), Usage(input_other=800, output=40), a[0]
+        return wrap(a), Usage(input_other=800, output=20), "stop"
 
     c = ModelClient(budget, providers={"reply": "ds"}, model_of=lambda pid: "deepseek-flash", call=call,
                     clock=lambda: E)
@@ -168,6 +176,33 @@ class ComposeTests(unittest.TestCase):
         core = Path("harness/persona/core.md").read_text(encoding="utf-8")
         self.assertIn("不是每次都这样", core)
 
+    def test_reads_the_room_first(self):
+        self.assertIn("先读懂这段聊天", cm.INSTRUCTIONS)
+        self.assertIn("看不到内容", cm.INSTRUCTIONS)
+        for raw, want in (('{"gist": "在吐槽", "reply": "哈哈"}', ("在吐槽", "哈哈")),
+                          ('```json\n{"gist": "g", "reply": "r"}\n```', ("g", "r")),
+                          ("哈哈", None), ('{"reply": "哈哈"}', None), ('{"gist": 1, "reply": "x"}', None),
+                          ('{"gist": "g", "reply": "x", "extra": 1}', None)):
+            with self.subTest(raw=raw):
+                self.assertEqual(cm.parse_output(raw), want)
+        out, seen = self.run_c(["RAW:烤冷面吧", "烤冷面吧"])
+        self.assertEqual((out.outcome, out.attempts), ("send", 2))
+        self.assertIn("format", out.hits)
+        self.assertIn("JSON", seen[1][1])
+        self.assertEqual(out.gists[-1], "大家在聊吃什么")
+        out, _ = self.run_c(["RAW:烤冷面吧", "RAW:还是不对"])
+        self.assertEqual(out.outcome, "drop")
+
+    def test_nicknames_may_go_out_letters_may_not(self):
+        ctx = [Msg("1", E, "p1", "今晚吃啥", name="小王"), Msg("2", E + 5, "p2", "火锅", name="")]
+        m = Msg("3", E + 9, "p1", "阿灯你说呢", name="小王")
+        c, *_ = client_for(["小王 烤冷面吧", "A说的火锅也行", "火锅也行"], self.d)
+        ok = asyncio.run(cm.compose(c, self.persona, m, ctx, m.ts))
+        self.assertEqual(ok.outcome, "send")   # a real nickname is fine
+        c, *_ = client_for(["A说的火锅也行", "火锅也行"], self.d)
+        out = asyncio.run(cm.compose(c, self.persona, m, ctx, m.ts))
+        self.assertIn("placeholder", out.hits)  # the fallback letter for the nameless one isn't
+
     def test_length_follows_the_group(self):
         long = "我觉得吧这个事情其实挺复杂的因为大家口味都不一样所以最好还是投票决定比较公平你们觉得呢"
         out, _ = self.run_c([long, "投票吧"], group_p90_len=12)
@@ -208,6 +243,8 @@ class ComposeBenchTests(unittest.TestCase):
                     self.assertNotIn(m.text, blob)
         html = next((self.d / "bench" / "runs").glob("compose-*.html")).read_text(encoding="utf-8")
         self.assertIn("我也想吃", html)
+        self.assertIn("它的理解：大家在聊吃什么", html)  # the read of the room, local only
+        self.assertNotIn("大家在聊吃什么", blob)
         self.assertIn("没有往群里发任何东西", out)
 
     def test_brush_offs_and_repeats_are_counted(self):

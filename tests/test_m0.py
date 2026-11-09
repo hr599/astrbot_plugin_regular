@@ -231,7 +231,8 @@ class PipelineTests(unittest.TestCase):
 
 class DebugTests(unittest.TestCase):
     def test_redact_hides_ids_and_text(self):
-        r = redact(group_msg("我的秘密", uid=ME))
+        # a fixed time: the current one sometimes contains "555" (GROUP), which made this flaky
+        r = redact(group_msg("我的秘密", uid=ME, ts=1_793_451_600))
         dumped = json.dumps(r, ensure_ascii=False)
         for secret in ("我的秘密", ME, GROUP, BOT, "小王"):
             self.assertNotIn(secret, dumped)
@@ -240,7 +241,7 @@ class DebugTests(unittest.TestCase):
     def test_bundle_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:
             dumper = RawDumper(Path(d) / "raw", enabled=True)
-            dumper.write(group_msg("秘密内容"), {"action": "logged"})
+            dumper.write(group_msg("秘密内容", ts=1_793_451_600), {"action": "logged"})
             path = build_bundle(Path(d) / "debug", status={"v": 1}, traces=[
                 {"scope_id": SCOPE, "msg_id": f"{SCOPE}:1", "reasons": json.dumps({"gate": "x"})}
             ], raw_events=dumper.tail())

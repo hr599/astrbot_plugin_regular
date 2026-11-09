@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 
-from .decide import Msg
+from .decide import Msg, display_name
 
 
 def stored_moments(store, scope_id: str, since_ts: int = 0, until_ts: int | None = None,
@@ -21,6 +21,7 @@ def stored_moments(store, scope_id: str, since_ts: int = 0, until_ts: int | None
             reply_to=r["reply_to"],
             reply_to_bot=bool(r["reply_to_bot"]) or store.is_bot_message(r["reply_to"]),
             is_bot=bool(r["is_bot"]), from_bot=str(r["sender_uid"]) in bot_uids,
+            name=display_name(r["sender_name"], r["sender_uid"]),
         ))
     msgs += _pokes(store, scope_id, since_ts, until_ts, bot_uids)
     msgs.sort(key=lambda m: (m.ts, m.kind != "poke"))

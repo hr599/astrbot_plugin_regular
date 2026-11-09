@@ -40,10 +40,13 @@ GUIDE = (
     "5 不是冲着它，安静\n"
     "s 跳过（看不懂、拿不准都可以跳）\n"
     "\"冲着它\" = 叫它名字跟它说话、问它问题、接它的话。只是提到它不算。\n"
-    "@它、引用它的消息不会出现在这里，那些规则上一定回。"
+    "@它、引用它的消息不会出现在这里，那些规则上一定回。\n"
+    "（回复 X）/ @X 是说给别人的：一般是他们俩之间的事，选 4 或 5，除非阿灯真有话非说不可。\n"
+    "上面标着「← 你让阿灯说话了」的，就当他刚说过一句：同一段聊天里他不会每条都接。"
 )
 
-ANSWER_HINT = "回复 /reg label 加每条的答案，比如 /reg label 5 5 3 4 5（s 跳过）\n/reg label help 看说明"
+ANSWER_HINT = ("回复 /reg label 加每条的答案，比如 /reg label 5 5 3 4 5（s 跳过）\n/reg label help 看说明\n"
+               "/reg label recheck 用现在的显示方式复查你以前标成 3 的")
 
 _QUESTION = ("?", "？", "吗", "呢", "啥", "什么", "怎么", "谁", "哪")
 
@@ -104,7 +107,7 @@ def _name(row) -> str:
 
 class Labeler:
     def __init__(self, store, *, aliases=DEFAULT_ALIASES, rng: random.Random | None = None,
-                 context: int = 3, batch: int = 5, scopes=None):
+                 context: int = 8, batch: int = 5, scopes=None):
         """scopes: callable returning the scope ids to label from (the watched
         groups); defaults to every group scope in the store."""
         self.store = store
@@ -117,6 +120,7 @@ class Labeler:
         # labeling at once can never have one's answers land on the other's batch.
         self._pending: dict[str, list[str]] = {}  # who -> msg_ids on their screen, in order
         self._guided: set[str] = set()
+        self._recheck: dict[str, int] = {}  # who -> when they started rechecking (in memory)
 
     @property
     def pending(self) -> list[str]:
@@ -124,11 +128,25 @@ class Labeler:
         return self._pending.get("", [])
 
 
-    def _line(self, r, mark: str) -> str:
+    def _line(self, r, mark: str, labels: dict | None = None) -> str:
+        """One message as the labeler sees it: a quote of someone else is marked
+        (the text alone didn't show it), and in the context, a moment you already
+        labelled as 阿灯 speaking is flagged, so you can picture him having just said
+        something (first compose drafts, Nov 9: runs of 3s in one thread)."""
         text = "[已撤回]" if r["recalled"] else r["text"]
-        return f"{mark}{_hhmm(r['ts'])} {_name(r)}: {text}"
+        to = ""
+        if r["reply_to"]:
+            to = f"（回复 {self.store.sender_name_of(r['reply_to']) or '别人'}）"
+        flag = ""
+        if labels is not None:
+            lab = labels.get(r["msg_id"])
+            if lab and lab["should"] == "reply" and not lab["addressed"]:
+                flag = "   ← 你让阿灯说话了"
+        return f"{mark}{_hhmm(r['ts'])} {_name(r)}{to}: {text}{flag}"
 
-    def next(self, who: str = "") -> str:
+    def next(self, who: str = "", recheck: bool = False) -> str:
+        if recheck or who in self._recheck:
+            return self._next_recheck(who)
         scopes = self.scopes()
         if not scopes:
             self._pending.pop(who, None)
@@ -142,11 +160,7 @@ class Labeler:
         self._pending[who] = [r["msg_id"] for r in rows]
         if not rows:
             return "没有待标注的消息了 👍"
-        blocks = []
-        for i, r in enumerate(rows, 1):
-            ctx = [self._line(c, "   ") for c in self.store.before(r["msg_id"], self.context)]
-            where = f" 群 {r['scope_id'].rsplit(':', 1)[-1]}" if multi else ""
-            blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ")]))
+        blocks = self._blocks(rows, multi)
         head = ""
         if who not in self._guided:
             head = GUIDE + "\n\n"
@@ -154,9 +168,37 @@ class Labeler:
         n = self.store.stats()["labels"]
         return head + "\n\n".join(blocks) + f"\n\n{ANSWER_HINT}\n（已标 {n} 条）"
 
+    def _blocks(self, rows, multi: bool) -> list[str]:
+        labels = self.store.labels()
+        blocks = []
+        for i, r in enumerate(rows, 1):
+            ctx = [self._line(c, "   ", labels) for c in self.store.before(r["msg_id"], self.context)]
+            where = f" 群 {r['scope_id'].rsplit(':', 1)[-1]}" if multi else ""
+            blocks.append(f"【{i}】{where}\n" + "\n".join(ctx + [self._line(r, " → ")]))
+        return blocks
+
+    def _next_recheck(self, who: str) -> str:
+        """Your earlier 3s, oldest first, shown the new way (more context, quotes and
+        your other 3s marked). Answering rewrites the label (same code keeps it)."""
+        since = self._recheck.setdefault(who, int(time.time()))
+        held = {m for w, ids in self._pending.items() if w != who for m in ids}
+        rows = [r for r in self.store.reply_labels(self.scopes(), since) if r["msg_id"] not in held]
+        left = len(rows)
+        rows = rows[:self.batch]
+        self._pending[who] = [r["msg_id"] for r in rows]
+        if not rows:
+            self._recheck.pop(who, None)
+            return "以前标成 3 的都复查完了 👍 发 /reg label 继续标新的。"
+        blocks = self._blocks(rows, len({r["scope_id"] for r in rows}) > 1)
+        return ("复查以前标成 3（阿灯会插一句）的时刻。现在能看到更多上下文、谁在回复谁、你在附近标过的 3。"
+                "还是 3 就再答 3，想改就答别的。\n\n"
+                + "\n\n".join(blocks) + f"\n\n{ANSWER_HINT}\n（还剩 {left} 条要复查）")
+
     def answer(self, arg: str, who: str = "") -> str:
         if arg.strip().lower() in ("help", "说明"):
             return GUIDE + "\n\n" + ANSWER_HINT
+        if arg.strip().lower() in ("recheck", "复查"):
+            return self.next(who, recheck=True)
         pending = self._pending.get(who, [])
         if not pending:
             return "现在没有待回答的题。发 /reg label 开始。"
@@ -170,7 +212,12 @@ class Labeler:
             if not self.store.labelable(mid):  # recalled or expired since it was shown
                 gone += 1
                 continue
-            if t == "s":
+            if t == "s" and who in self._recheck:
+                old = self.store.labels().get(mid)  # rechecking: s keeps the label as it was
+                if old:
+                    self.store.set_label(mid, old["addressed"], old["should"])
+                skipped += 1
+            elif t == "s":
                 self.store.skip_label(mid)
                 skipped += 1
             else:

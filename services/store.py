@@ -232,6 +232,34 @@ class Store:
     def skip_label(self, msg_id: str) -> None:
         self.db.execute("INSERT OR IGNORE INTO label_skips (msg_id) VALUES (?)", (msg_id,))
 
+    def sender_name_of(self, msg_id: str | None) -> str | None:
+        """The current display name of whoever sent msg_id (labeling: 回复 X)."""
+        if not msg_id:
+            return None
+        row = self.db.execute(
+            """SELECT (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
+                       ORDER BY a.last_seen DESC LIMIT 1) AS n, m.is_bot
+               FROM messages m WHERE m.msg_id=?""", (msg_id,)).fetchone()
+        if not row:
+            return None
+        return "阿灯" if row["is_bot"] else row["n"]
+
+    def reply_labels(self, scope_ids: list[str], before_ts: int, limit: int = 500) -> list[sqlite3.Row]:
+        """Moments labelled 3 (not for 阿灯, but he'd speak) before before_ts, oldest
+        first, still labelable: /reg label recheck."""
+        if not scope_ids:
+            return []
+        q = ",".join("?" * len(scope_ids))
+        return self.db.execute(
+            f"""SELECT m.rowid AS rid, m.*, (SELECT a.name FROM aliases a WHERE a.person_id=m.person_id
+                              ORDER BY a.last_seen DESC LIMIT 1) AS sender_name
+                FROM labels l JOIN messages m USING (msg_id)
+                WHERE m.scope_id IN ({q}) AND l.should='reply' AND l.addressed=0 AND l.labeled_at<?
+                  AND m.recalled=0
+                ORDER BY m.ts ASC LIMIT ?""",
+            (*scope_ids, before_ts, limit),
+        ).fetchall()
+
     def labels(self) -> dict[str, dict[str, Any]]:
         return {
             r["msg_id"]: {"addressed": bool(r["addressed"]), "should": r["should"]}
