@@ -531,6 +531,9 @@ What it checks (a proposal that fails any of these is never saved):
 - it isn't an order to 阿灯 (except how someone wants to be called, or a topic
   they don't want raised), and health, money, politics and the like are only
   ever "don't bring this up";
+- a role someone asks 阿灯 to play or call them (主人, 老公, 陛下…) is never
+  kept, even if he said no: the memory would bring the request back into his
+  prompt;
 - a fact about someone needs their own words or two different people; less
   than that is kept as a "maybe" that expires in 14 days;
 - at most 40 characters, no long digit runs, no copied photo descriptions;

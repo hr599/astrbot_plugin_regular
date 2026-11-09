@@ -1,5 +1,5 @@
 {
- "_about": "M3a synthetic group for /reg bench dream (design doc tab 'M3 memory spec', Testing). Invented people and chat. 'should' = memories a good dream pass stores (validated or candidate); 'must_not' = deliberately wrong notes it must never store (candidate_ok: a candidate is fine because the evidence rules park it; except_types: allowed as that type, e.g. a boundary).",
+ "_about": "M3a synthetic group for /reg bench dream (design doc tab 'M3 memory spec', Testing). Invented people and chat. 'should' = memories a good dream pass stores (validated or candidate); 'must_not' = deliberately wrong notes it must never store (candidate_ok: a candidate is fine because the evidence rules park it; except_types: allowed as that type, e.g. a boundary). v2 (Nov 9): S6's move was dated before 'now' (a plan already past is rightly not kept); it's now next month.",
  "base": "2026-10-26",
  "now": [
   11,
@@ -150,13 +150,13 @@
    3,
    "19:05",
    "阿杰",
-   "我这周六搬家 有人来帮忙吗"
+   "我下个月十五号搬家 有人来帮忙吗"
   ],
   [
    3,
    "19:06",
    "小王",
-   "我周六有空 可以去"
+   "我那天有空 可以去"
   ],
   [
    3,

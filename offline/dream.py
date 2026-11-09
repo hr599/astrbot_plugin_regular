@@ -178,11 +178,25 @@ def check_verbatim(op: Op, ctx: Ctx):
 _CLAUSE = re.compile(r"[，,。.；;！!？?\n]+")
 
 
+# a role for 阿灯 to play toward someone (主人, 老公…) is never a "preferred name",
+# and a record that someone asked for one keeps the request alive in his prompt
+# (first /reg bench dream, Nov 9: "要求阿灯叫‘主人’未获同意" was accepted as a boundary)
+_ROLE = r"(主人|主子|主公|爸爸|爸比|爹地|老爹|爷爷|老公|老婆|夫人|宝贝|亲爱的|陛下|大人|女王|殿下|master|daddy)"
+# being called one (叫/称为/喊…主人, quotes allowed in between), or a preference for it as
+# a name (主人这个称呼). A role word in an ordinary fact passes: 爸爸是医生, 认识小王的老婆,
+# 当爸爸了, 不想让阿灯提起爸爸 (PR #44 review)
+_ROLE_REQUEST = re.compile(
+    r"(叫|称呼|称为|称作|称我|喊|当作|当成|认作)[^，。；,;]{0,6}" + _ROLE
+    + r"|" + _ROLE + r"[”’\"'」』]?(这个|这种|的)?(称呼|叫法|称谓|昵称|外号|名字)", re.I)
+
+
 def check_imperative(op: Op, ctx: Ctx):
     if op.kind not in ("add", "revise"):
         return None
     if injection_flags(op.text):  # never exempt
         return Verdict("imperative", "reads as an instruction to the bot")
+    if _ROLE_REQUEST.search(op.text):  # never exempt either, even as a boundary
+        return Verdict("imperative", "a role for 阿灯 to play (主人…), even one he declined, is never kept")
     for clause in _CLAUSE.split(op.text):
         # the exemption covers only the clause that is the preference itself
         # (PR #11 review: "alice不想聊前任；<instruction>" passed whole)

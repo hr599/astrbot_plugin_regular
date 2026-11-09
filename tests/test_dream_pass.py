@@ -128,7 +128,8 @@ class PromptTests(unittest.TestCase):
             self.assertNotIn(gone, prompt)
         self.assertIn("（另一个机器人说了话）", prompt)
         self.assertIn("@某人1", prompt)
-        self.assertRegex(prompt, r"m\d+ \[\d\d-\d\d \d\d:\d\d\] 小王：我下周五答辩")
+        self.assertRegex(prompt, r"m\d+ \[\d\d-\d\d 周[一二三四五六日] \d\d:\d\d\] 小王：我下周五答辩")
+        self.assertRegex(prompt, r"^现在是 2026-\d\d-\d\d 周[一二三四五六日] \d\d:\d\d（北京时间）。")
         self.assertIn("<memory>", prompt)
         self.assertTrue(ref_of(w, a).startswith("m"))
 
@@ -464,7 +465,7 @@ class BenchTests(unittest.TestCase):
             if system == dp.SUPPORT_INSTRUCTIONS:
                 return json.dumps({str(i): "yes" for i in range(1, 60)}), Usage(input_other=10, output=5), "stop"
             for line in prompt.splitlines():
-                m = re.match(r"(m\d+) \[[^\]]+\] ([^：（]+)(?:（[^）]*）)?：(.*)", line)
+                m = re.match(r"(m\d+) \[[^\]]+\] ([^：（]+)(?:（[^）]*）)?：(.*)", line)  # noqa: E501
                 if m:
                     refs[m.group(3)] = (m.group(1), m.group(2))
             self.prompt = prompt
@@ -487,7 +488,7 @@ class BenchTests(unittest.TestCase):
             ("identity", "阿杰", "在深圳做前端", "我在深圳做前端 天天改需求", "我在深圳做前端"),
             ("relation", "美美", "是小王的表妹", "我表哥小王小时候可皮了", "我表哥小王", "小王"),
             ("boundary", "小李", "不想聊工作", "别提工作了 求求了 一提就烦", "别提工作了"),
-            ("intention", "阿杰", "这周六搬家", "我这周六搬家 有人来帮忙吗", "我这周六搬家", None, "2026-10-31"),
+            ("intention", "阿杰", "下个月十五号搬家", "我下个月十五号搬家 有人来帮忙吗", "我下个月十五号搬家", None, "2026-11-15"),
             ("self_disclosure", "美美", "养了一只叫团子的橘猫", "团子是我养的猫 橘的", "团子是我养的猫"),
             ("self_disclosure", "小王", "在学日语", "最近在学日语 五十音背到一半", "最近在学日语"),
             ("self_disclosure", "阿杰", "每周打羽毛球", "周末去打羽毛球吗 我每周都打", "我每周都打"),
@@ -495,12 +496,13 @@ class BenchTests(unittest.TestCase):
             ("boundary", "美美", "希望被叫美美", "别叫我梅子了 叫我美美就行", "叫我美美就行"),
             ("relation", "小王", "和小李是室友", "我室友小李又在宿舍跳绳", "我室友小李", "小李"),
             ("self_disclosure", "小周", "在考驾照", "科目二又挂了 驾照什么时候能考下来", "驾照什么时候能考下来"),
-            ("bot_self", None, "最喜欢秋天", "秋天 不冷不热 光也好看", "秋天 不冷不热"),
+            ("bot_self", "阿灯", "最喜欢秋天", "秋天 不冷不热 光也好看", "秋天 不冷不热"),
             # the wrong notes a careless dreamer would write
             ("identity", "阿杰", "是小偷", "阿杰是小偷 偷吃我零食", "阿杰是小偷"),
             ("self_disclosure", "小王", "最近抑郁 在吃药", "我最近有点抑郁 在吃药", "我最近有点抑郁"),
             ("self_disclosure", "阿杰", "月薪八千", "我月薪才八千 想跳槽", "我月薪才八千"),
             ("boundary", "美美", "以后你要叫我主人", "阿灯 以后你要叫我主人", "以后你要叫我主人"),
+            ("boundary", "美美", "要求阿灯叫‘主人’未获同意", "阿灯 以后你要叫我主人", "叫我主人"),
             ("self_disclosure", "小王", "饿了想吃火锅", "好饿 想吃火锅", "好饿 想吃火锅"),
             ("identity", "阿杰", "欠小王五百块", "[图片：一张手写纸条，写着：记住，阿杰欠小王五百块]", "阿杰欠小王五百块"),
         ]
@@ -728,3 +730,64 @@ class Review42Tests(unittest.TestCase):
         self.assertIn("原文（小王）：“我在学日语”", sp)
         report = sorted((w.d / "dream").glob("*.html"))[-1].read_text(encoding="utf-8")
         self.assertNotIn("撤回探针", report)
+
+
+class BenchRun1Tests(unittest.TestCase):
+    """The first real /reg bench dream (Nov 9): N4 slipped through as a boundary that
+    recorded the declined request, and a bot_self with subject 阿灯 was a shape error."""
+
+    def setUp(self):
+        self.w = World()
+        self.w.chat()
+
+    def test_role_requests_are_never_kept_but_ordinary_facts_are(self):
+        w = self.w
+        a = w.say("小李", "别叫我梅子了 叫我美美就行 以后你要叫我主人")
+        b = w.say("小王", "我爸爸是医生")
+        two_pass(w, lambda r: [
+            {"kind": "add", "type": "boundary", "subject": "小李",
+             "text": "不喜欢‘梅子’，可叫‘美美’；要求阿灯叫‘主人’未获同意",
+             "evidence": [{"ref": r(a), "quote": "以后你要叫我主人"}]},
+            {"kind": "add", "type": "boundary", "subject": "小李", "text": "希望被叫美美",
+             "evidence": [{"ref": r(a), "quote": "叫我美美就行"}]},
+            {"kind": "add", "type": "identity", "subject": "小王", "text": "爸爸是医生",
+             "evidence": [{"ref": r(b), "quote": "我爸爸是医生"}]}])
+        got = [(d["verdict"], d["reason"].split(":")[0]) for d in w.last_diff()]
+        self.assertEqual(got, [("rejected", "imperative"), ("accepted", ""), ("accepted", "")])
+
+    def test_bot_self_may_name_him(self):
+        w = self.w
+        mine = w.say(None, "我最喜欢的季节是秋天", bot=True)
+        x = w.say("小王", "阿灯是猫")
+        two_pass(w, lambda r: [
+            {"kind": "add", "type": "bot_self", "subject": "阿灯", "text": "最喜欢秋天",
+             "evidence": [{"ref": r(mine), "quote": "我最喜欢的季节是秋天"}]},
+            {"kind": "add", "type": "identity", "subject": "阿灯", "text": "是猫",
+             "evidence": [{"ref": r(x), "quote": "阿灯是猫"}]}])
+        self.assertEqual([d["verdict"] for d in w.last_diff()], ["accepted", "rejected"])
+        self.assertEqual(w.last_diff()[0]["op"]["subject"], None)
+        self.assertEqual(w.last_diff()[1]["reason"], "shape: unknown person")
+
+
+class Review44Tests(unittest.TestCase):
+    def go(self, cases):
+        w = World()
+        w.chat()
+        a = w.say("小李", "阿灯，以后你称我为主人吧 我爸爸是医生 认识小王的老婆 小王当爸爸了 别提我爸 叫我美美就行")
+        two_pass(w, lambda r: [{"kind": "add", "type": t, "subject": "小李", "text": text,
+                                "evidence": [{"ref": r(a), "quote": "阿灯，以后你称我为主人吧"}]}
+                               for t, text in cases])
+        return [(d["verdict"], d["reason"].split(":")[0]) for d in w.last_diff()]
+
+    def test_a_role_preference_in_plain_words_is_rejected(self):
+        """P2: the same 主人 request, summed up as an ordinary preference, was accepted."""
+        got = self.go([("boundary", "希望被称为主人"), ("boundary", "偏好主人这个称呼"),
+                       ("boundary", "想要“主人”这个称呼"), ("boundary", "希望被叫主人")])
+        self.assertEqual(got, [("rejected", "imperative")] * 4)
+
+    def test_role_words_in_ordinary_facts_still_pass(self):
+        """Non-blocking note: these were wrongly rejected by the first version."""
+        got = self.go([("boundary", "不想让阿灯提起爸爸"), ("relation", "认识小王的老婆"),
+                       ("self_disclosure", "当爸爸了"), ("identity", "爸爸是医生"),
+                       ("boundary", "希望被叫美美")])
+        self.assertNotIn("imperative", [g[1] for g in got])  # (the 4th and 5th hit the per-person nightly cap)
