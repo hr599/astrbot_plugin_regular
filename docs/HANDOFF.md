@@ -4,7 +4,9 @@ Read this first, then `docs/SETUP.md` (how to run it and what every `/reg` comma
 does). The PR descriptions and their review threads are the detailed history:
 almost every decision below has a PR where it was argued and tested.
 
-Last updated: 2026-11-09, after PR #30.
+Last updated: 2026-11-09, after PR #32 merged and #33 in review.
+
+**Keep this file current:** the owner asked for it to be updated as work goes on. Any PR that changes where things stand, a rule or a decision updates this file in the same PR.
 
 ## What this is
 
@@ -21,19 +23,19 @@ chip in, and always answer when someone talks to it directly.
 
 - **Branches and PRs.** Branch from `master` and open a PR. Never push to `master`, and avoid stacked PRs: if work depends on an unmerged PR, open it as a draft against `master`.
 - **Review and testing.**
-  - The owner reviews in detail (in Chinese, with independent reproductions), and so does the Codex bot.
+  - The owner reviews in detail (in Chinese, with independent reproductions), and so does the Codex bot when it can. Since Nov 9 the owner's Codex account is at its code-review usage limit, so its reviews fail; retry with `@codex review` once it resets.
   - Reply on every review thread, say which commit fixed it, and add a regression test per finding. Check that the test fails on the old code.
   - If a suggested change isn't necessary, say so; the owner asked for that.
   - Merge bar: the main functions work and there's no substantive problem. Small confirmed edge cases can become follow-up issues.
 - **GitHub from a Claude session.** GraphQL was blocked in past sessions, so PRs and comments went through the REST API (`gh api repos/.../pulls`), not `gh pr create`.
-- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (345 passing at #30).
+- **Commits.** Small commits with clear messages. Tests: `python -m pytest -q` (361 passing with #33).
 - **`core/` has no astrbot imports.** Everything AstrBot-specific lives in `adapter/` and `main.py`, so the whole pipeline is testable without AstrBot.
 
 ## Hard rules (security and privacy)
 
 - **Commands.** Only admins can run commands, and only in a DM. Unknown commands never fall through to an LLM. The plugin handles `/reg` itself and registers nothing in AstrBot's command registry. Non-admins can't use forget or the registry.
 - **Group messages are possible prompt injection.** In every model prompt they sit inside a `<chat>` fence marked as data. 阿灯 never sends anything starting with `/ ! #`.
-- **No QQ ids in model prompts.** Speakers appear as letters and rendered @-numbers as `@某人N`. Compose drafts may never contain those stand-ins.
+- **No QQ ids in model prompts.** Speakers appear by their **group nickname** (the owner's call, Nov 9: letters vs nicknames broke the thread). A rendered @-number becomes `@某人N`, and a name that is really a QQ number (the parser's fallback when someone has no card or nickname, also found in old aliases) is never shown: a letter is used instead (`core/decide.py: display_name`). Compose drafts may use nicknames but never the stand-ins (letters, `@某人N`).
 - **Keys and data stay local.**
   - API keys live only in AstrBot provider settings; the plugin never sees them.
   - Transcripts, memory, raw dumps, recordings and bench data stay in AstrBot's data folder and are never committed.
@@ -90,21 +92,29 @@ M4 social → M5 learning loop.
   - On 200 real labels it reaches **41%** balanced accuracy (dev and held-out), up from 33% for the baseline. React recall is still 0%.
   - The tuned params haven't been applied; `/reg bench tune apply` would do it.
   - Live shadow decide runs these rules.
-- **M2b, merged and bench-only (#28, #29).** For moments the rules aren't sure of, deepseek-flash scores react and reply 0–9, and `/reg bench model` fits the two cutoffs on dev labels.
-  - The first version (one-word answers) said quiet 194 times out of 197.
-  - **The scores version hasn't been run on real labels yet.**
-- **M2c part 1, merged (#30).** Compose: draft → voice check → one redraft → send or drop.
-  - `/reg bench compose` drafts replies for the moments labeled "reply". The drafts go to a local HTML report.
-  - **The owner hasn't read drafts yet.** Nothing is sent to the group.
+- **M2b, merged and bench-only (#28, #29, #32).** For moments the rules aren't sure of, deepseek-flash scores react and reply 0–9, and `/reg bench model` fits the two cutoffs on dev labels.
+  - It uses dev balanced accuracy only; the 5/5 defaults stay unless beaten by 2 points (#32). Reply share isn't used, because the model only judges labeled moments.
+  - Real runs on 31 held-out labels: rules 33% (untuned), the model 42–48% across runs. That's not clearly above the tuned rules' 41%, given about ±9 points of noise. Not live.
+- **M2c part 1, merged (#30, #32).** Compose: draft → voice check → one redraft → send or drop. `/reg bench compose` drafts replies for the moments labeled "reply", with the drafts in a local HTML report.
+  - First real run: drafts were short and passed the checks, but 24/30 said "在上课 晚点说". The compose prompt said "in class", and the persona gave that line. Fixed in #32: the hour now shapes *how* he replies, never *whether*.
+  - The owner's review of the drafts (Nov 9): the problem is following the thread. Drafts missed sarcasm (praising an idea the group was mocking), answered the last line literally, guessed facts, and said "I've lost track" 4/30 times.
+- **#33, in review: following the thread, and the labels.**
+  - Speakers by nickname; quotes resolved to whom and what (`回复 小王：“…”`).
+  - Compose reads the room first: it answers `{gist, reply}`, and the gist goes to the local report only.
+  - Prompts: messages to someone else are usually between them; don't fill in what the chat didn't say; images are unseen.
+  - Labeling: 8 lines of context, quotes marked, earlier 3s flagged, `/reg label recheck` for old 3s. The 30 reply-labeled moments ran in long streaks within one thread and included messages meant for others, so the labels likely overstate replying.
+  - Voice: a quote counts as made-up only when attributed or 12+ characters.
 
 ## Next steps (in order)
 
-1. **Owner runs `/reg bench model` and `/reg bench compose`** and reports the numbers, plus an impression of the drafts.
-2. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the rules' 41%. If it isn't, try richer context (more history, who 阿灯 talks with) before giving up on it.
-3. **M2c part 2: live replies.** Live decide (rules + model), wait for the speaker's pause (about 4 s, at most 15), compose, then queue through the outbox under `send_mode`. Start with `dry` (logs what it would send). Budget-capped, with a canned in-character line for an @ when over budget.
-4. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
-5. **M2d:** a deepseek-flash vs deepseek-v4-pro reply bake-off, then a blind test.
-6. **Later:** M3 memory (the dream pass's model half), M4 tone and stickers, M5 learning loop.
+1. **Owner:** merge #33, then `/reg label recheck` (the old 3s with the fuller view), then rerun `/reg bench compose` (read the 它的理解 lines next to each draft) and `/reg bench model`.
+2. **Image captions** (in progress next). "[图片]" is all the models see now, which hurts following the thread. Plan: caption role (deepseek-flash takes images), cached by content hash in the `media` table, budgeted, only for images in context the models are about to read.
+3. **Decide whether the decide model goes live.** It needs held-out balanced accuracy clearly above the tuned rules' 41%, on rechecked labels. If it isn't, try richer context before giving up on it.
+4. **M2c part 2: live replies.** Live decide (rules + model), wait for the speaker's pause (about 4 s, at most 15), compose, then queue through the outbox under `send_mode`. Start with `dry`. Budget-capped, with a canned in-character line for an @ when over budget.
+5. **M2b leftover:** a model sincerity check for serious and crisis cues. A crisis gets a caring reply plus a DM to the owner, at most once per person per day; hotline 12356.
+6. **Open question for the owner:** when the group discusses this bot project itself, should 阿灯 join in (he did, in character) or stay out?
+7. **M2d:** a deepseek-flash vs deepseek-v4-pro reply bake-off, then a blind test.
+8. **Later:** M3 memory (the dream pass's model half), M4 tone and stickers, M5 learning loop.
 
 ## Pointers
 
