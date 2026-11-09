@@ -22,6 +22,7 @@ from typing import Any
 
 from ._core import DEFAULT_ALIASES, load_params, rhythm_state
 from ._core import compose as cm
+from ._core import recall
 from ._core import decide_model as dm
 from .runner import CONTEXT, merged_msg, turns
 from .situations import Recording
@@ -38,9 +39,9 @@ def p90_len(recs: list[Recording]) -> int | None:
     return lens[int(0.9 * (len(lens) - 1))] if lens else None
 
 
-def targets(recs: list[Recording], should: str = "reply") -> list[tuple[Any, list, int]]:
-    """(merged turn message, the moments before it, its time) for each turn holding a
-    label of `should`, in recording order."""
+def targets(recs: list[Recording], should: str = "reply") -> list[tuple[Any, list, int, list]]:
+    """(merged turn message, the moments before it, its time, the earlier lines from
+    today it picks up) for each turn holding a label of `should`, in recording order."""
     out = []
     for r in recs:
         msgs = r.messages
@@ -48,8 +49,10 @@ def targets(recs: list[Recording], should: str = "reply") -> list[tuple[Any, lis
             turn = [msgs[i] for i in idx]
             if any(r.labels.get(x.msg_id, {}).get("should") == should for x in turn):
                 m = merged_msg(turn)
-                before = [x for x in msgs[:idx[0]] if x.scene == m.scene][-CONTEXT:]  # never across scenes
-                out.append((m, before, m.ts))
+                same = [x for x in msgs[:idx[0]] if x.scene == m.scene]  # never across scenes
+                before = same[-CONTEXT:]
+                old = recall.earlier(m, before, same, m.ts, quotes=[x.reply_to for x in turn if x.reply_to])
+                out.append((m, before, m.ts, old))
     return out
 
 
@@ -108,12 +111,13 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
     results: list[Any] = [None] * len(todo)
 
     async def one(i: int) -> None:
-        m, ctx, now = todo[i]
+        m, ctx, now, old = todo[i]
         async with sem:
             if getattr(store, "cache_gen", 0) != gen:
                 return  # someone was forgotten: nothing more goes out
             results[i] = await cm.compose(client, persona, m, ctx, now, rhythm=rhythm_state(now, windows),
-                                          group_p90_len=p90, cache=True, rng=random.Random(i), gen=gen)
+                                          group_p90_len=p90, cache=True, rng=random.Random(i), gen=gen,
+                                          earlier=old)
 
     await asyncio.gather(*(one(i) for i in range(len(todo))))
     if getattr(store, "cache_gen", 0) != gen:
@@ -149,7 +153,7 @@ async def compose_bench(recs: list[Recording], data_dir: Path, *, client, person
     bench = data_dir / "bench"
     bench.mkdir(parents=True, exist_ok=True)
     (bench / LAST_FILE).write_text(json.dumps(res, ensure_ascii=False, indent=2), encoding="utf-8")
-    report = write_html([(dm.render_chat(m, ctx, cm.CONTEXT_LINES), c) for (m, ctx, _), c in zip(todo, results)
+    report = write_html([(dm.render_chat(m, ctx, cm.CONTEXT_LINES, old), c) for (m, ctx, _, old), c in zip(todo, results)
                          if c is not None], bench / "runs", stamp)
 
     lines = [

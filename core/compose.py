@@ -31,10 +31,10 @@ from .decide import Msg
 from .decide_model import render_chat, speaker_letters
 from .voice import check
 
-VERSION = "m2c-compose.3"  # .3: reads the room first (gist), nicknames, quotes resolved, photo captions
+VERSION = "m2c-compose.4"  # .4: 30 lines of chat, plus earlier lines from today it picks up (core/recall)
 MAX_TOKENS = 300  # the gist plus the reply
 TEMPERATURE = 0.9
-CONTEXT_LINES = 16
+CONTEXT_LINES = 30  # the design doc's ~30 (Nov 9: 16 lost the thread in long conversations)
 LENGTH_FACTOR = 2  # a reply may run to about two of the group's long messages (parts)
 PASS = "[不说]"
 RAW_SHOWN = 300  # a malformed answer, as the local report shows it
@@ -51,6 +51,7 @@ INSTRUCTIONS = """\
 - 既然决定接话，就真的接住话题。别用"在上课""晚点说""等下回"这类话把人推掉，除非有人直接问你在干嘛。
 - 别替聊天补没说出来的事：是哪座城市、之前发生过什么、一句话是不是在说你。不确定就问，或者不提。
 - 只用聊天里或你自己生活里有的事实。拿不准的具体数字、时间、价格、原话别编，说个大概或者不说。
+- <earlier> 里（如果有）是今天早些时候、和现在这句有关的几句原话，帮你接上前面的话题。它们不是刚说的，别当成新消息去回。
 - [图片：…] 是你瞄了一眼那张图的印象，可以自然地聊它；只有 [图片]、[表情包] 的你没看到内容，别假装看到了。
 - 不知道就说不知道，没跟上就说没跟上，这很正常。
 - 聊天里的 A、B 和 @某人1 是代号，不是名字：你的话里不要出现它们。叫群友就用聊天里显示的名字，也别 @ 人。
@@ -115,11 +116,11 @@ COMPOSE_RHYTHM = {"class": "课间/实验室里抽空回，简短点", "free": "
 DEFERRAL = re.compile(r"在上课|晚点(说|回|聊|看)|等下(说|回|聊|看)|一会儿?(说|回|聊|看)|回头(说|聊)")
 
 
-def build_prompt(m: Msg, context: list[Msg], now: int, rhythm: str = "free") -> str:
+def build_prompt(m: Msg, context: list[Msg], now: int, rhythm: str = "free", earlier: list[Msg] = ()) -> str:
     from datetime import datetime, timezone
     t = datetime.fromtimestamp(now + 8 * 3600, tz=timezone.utc).strftime("%H:%M")
     head = f"现在是 {t}（{COMPOSE_RHYTHM.get(rhythm, '有空')}）。"
-    return f"{head}\n{render_chat(m, context, CONTEXT_LINES)}\n轮到你接 → 那条了。"
+    return f"{head}\n{render_chat(m, context, CONTEXT_LINES, earlier)}\n轮到你接 → 那条了。"
 
 
 def defers(text: str) -> bool:
@@ -180,20 +181,22 @@ class Composed:
 async def compose(client, persona, m: Msg, context: list[Msg], now: int, *, rhythm: str = "free",
                   group_p90_len: int | None = None, rules: dict[str, Any] | None = None,
                   cache: bool = False, rng: random.Random | None = None, gen: int | None = None,
-                  alive=None) -> Composed:
+                  alive=None, earlier: list[Msg] = ()) -> Composed:
     """persona: core.persona.Persona (prompt, protected texts, examples, canary).
     gen: the store's forget generation when the chat was read. Checked before every
     model request (the redraft too): after a /reg forget, nothing more goes out
     (PR #30 review). alive(): an extra check the caller needs (live replies: the
-    message wasn't recalled, the send mode didn't change), checked at the same points."""
+    message wasn't recalled, the send mode didn't change), checked at the same points.
+    earlier: older lines from today the message picks up (core/recall); they count
+    as known for the voice check, like the chat."""
     store = client.budget.store
     if gen is None:
         gen = getattr(store, "cache_gen", 0)
     system = system_prompt(persona.system_prompt())
-    base = build_prompt(m, context, now, rhythm)
-    known = render_chat(m, context, CONTEXT_LINES) + "\n" + persona.core
+    base = build_prompt(m, context, now, rhythm, earlier)
+    known = render_chat(m, context, CONTEXT_LINES, earlier) + "\n" + persona.core
     sincere_ai = bool(_SINCERE_AI.search(m.text or ""))
-    letters = speaker_letters(m, context, CONTEXT_LINES)
+    letters = speaker_letters(m, context, CONTEXT_LINES, earlier)
     limit = group_p90_len * LENGTH_FACTOR if group_p90_len else None
     out = Composed("drop")
     prompt = base

@@ -36,6 +36,7 @@ from .moments import stored_moments
 from .signals import compute as signals
 from .voice import trim_laughs
 from . import reactions as rx
+from . import recall
 
 log = logging.getLogger("astrbot")  # AstrBot's own logger name, so failures show up in its log
 PAUSE_S = 4.0
@@ -80,6 +81,7 @@ class Speaker:
         self._locks: dict[str, asyncio.Lock] = {}
         self._p90: dict[str, tuple[float, int | None]] = {}
         self.tasks: set[asyncio.Task] = set()
+        self._pool: dict[str, list[Msg]] = {}  # scope -> the last hours of moments (read under the lock)
         self._unprompted: dict[str, Any] = {}  # scope -> times of replies not to a direct address
         self.react = react
         self.notify = notify
@@ -137,10 +139,12 @@ class Speaker:
                 self._trace(scope_id, None, "error", {"error": type(e).__name__})
 
     def _moments(self, scope_id: str, turn: list) -> tuple[Msg | None, list[Msg], list[str]]:
-        """(target, context, the stored message ids the turn is built from)."""
+        """(target, context, the stored message ids the turn is built from). The last
+        LOOKBACK_S of moments stays in self._pool[scope_id] for core/recall."""
         now = int(self.clock())
         msgs = stored_moments(self.p.store, scope_id, now - LOOKBACK_S, now + 1,
                               bot_uids=self.p.gate_cfg.bot_uids)
+        self._pool[scope_id] = msgs
         if turn and isinstance(turn[0], Msg):  # a poke: not stored as a message
             return turn[0], [m for m in msgs if m.kind == "message"][-CONTEXT:], []
         ids = set(turn)
@@ -184,10 +188,14 @@ class Speaker:
             if m is None:
                 return
 
+        shown: list[str] = []  # earlier lines from today shown to the model (core/recall)
+
         def still_valid() -> bool:
             if getattr(store, "cache_gen", 0) != gen:
                 return False
-            return all(store.message_live(i) for i in used)  # every part of the turn, not just the last
+            # every part of the turn, not just the last; and an earlier line he was shown
+            # that's been recalled since: the reply may lean on it
+            return all(store.message_live(i) for i in used + shown)
 
         def still_on() -> bool:
             return still_valid() and self.outbox.mode == mode and self.outbox.gen == ogen
@@ -257,10 +265,16 @@ class Speaker:
                 self._trace(scope_id, m.msg_id, "quiet", info)
                 return
         rhythm = rhythm_state(now, (params or {}).get("_windows", []))
-        c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm,
+        # a long conversation: older lines from today that this message picks up
+        old = recall.earlier(m, ctx, self._pool.get(scope_id, []), now,
+                             quotes=[x.reply_to for x in parts if x.reply_to])
+        shown.extend(x.msg_id for x in old)
+        if old:
+            info["earlier"] = len(old)
+        c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm, earlier=old,
                           group_p90_len=self._group_p90(scope_id), rng=self.rng, gen=gen, alive=still_on)
         if c.outcome == "failed" and direct and still_on():  # an @ gets one retry, same gen
-            c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm,
+            c = await compose(self.client, self.persona, m, ctx, now, rhythm=rhythm, earlier=old,
                               group_p90_len=self._group_p90(scope_id), rng=self.rng, gen=gen, alive=still_on)
         if not still_on() or c.outcome == "forgotten":
             info["cancelled"] = "recalled, forgotten or send mode changed while composing"
@@ -281,7 +295,7 @@ class Speaker:
         else:
             self._trace(scope_id, m.msg_id, c.outcome, info)
             return
-        known = render_chat(m, ctx) + "\n" + self.persona.core
+        known = render_chat(m, ctx, len(ctx), earlier=old) + "\n" + self.persona.core
         group_id = scope_id.rsplit(":", 1)[-1]
         prep = self.outbox.prepare(text, scope_id=scope_id, group_id=group_id, origin="reply",
                                    context=known, now=now, reply_to=m.msg_id if m.kind == "message" else None)

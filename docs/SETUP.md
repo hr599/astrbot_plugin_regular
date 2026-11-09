@@ -415,7 +415,11 @@ How a reply happens (`core/live.py`):
    the rules say so; never while asleep, during an argument or a serious moment,
    twice in a row, or above about a fifth of recent messages.
 3. Compose writes the reply and the voice check approves it (one redraft at
-   most); the outbox checks it again, splits it into up to three messages with
+   most). It sees the last 30 lines of chat; in a long conversation, older lines
+   from the last 6 hours that the message picks up (shared words, or a quote of
+   one) come back too, word for word, at most 3 plus the quoted one
+   (`core/recall.py`, no model call). If one of those is recalled while he's
+   writing, the reply is cancelled. The outbox checks it again, splits it into up to three messages with
    typing delays, and applies the hourly cap (20 per group).
 4. One group, one reply at a time: the next decision waits until this reply is
    sent, so it sees what he just said.

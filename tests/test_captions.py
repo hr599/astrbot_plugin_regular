@@ -233,7 +233,7 @@ class Review34Tests(unittest.TestCase):
         asyncio.run(cap.describe(w.client, w.store, f"{SCOPE}:2", [(0, PNG)], now=E))
         rec = from_store(w.store, SCOPE)
         rec = Recording(rec.name, "saved", rec.messages, {f"{SCOPE}:3": {"addressed": False, "should": "reply"}})
-        m, ctx, now = targets([rec])[0]
+        m, ctx, now, _ = targets([rec])[0]
         self.assertEqual(m.captions, ["一碗烤冷面，上面撒了葱花"])
         self.assertIn("→ 小王：[图片：一碗烤冷面，上面撒了葱花]", compose_prompt(m, ctx, now))
         from bench.runner import merged_captions
