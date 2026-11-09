@@ -180,6 +180,8 @@ class ComposeTests(unittest.TestCase):
         self.assertIn("先读懂这段聊天", cm.INSTRUCTIONS)
         self.assertIn("看不到内容", cm.INSTRUCTIONS)
         for raw, want in (('{"gist": "在吐槽", "reply": "哈哈"}', ("在吐槽", "哈哈")),
+                          # Nov 9: a two-message reply has a real line break inside the string
+                          ('{"gist": "g", "reply": "第一条\n第二条"}', ("g", "第一条\n第二条")),
                           ('```json\n{"gist": "g", "reply": "r"}\n```', ("g", "r")),
                           ("哈哈", None), ('{"reply": "哈哈"}', None), ('{"gist": 1, "reply": "x"}', None),
                           ('{"gist": "g", "reply": "x", "extra": 1}', None)):
@@ -192,6 +194,10 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(out.gists[-1], "大家在聊吃什么")
         out, _ = self.run_c(["RAW:烤冷面吧", "RAW:还是不对"])
         self.assertEqual(out.outcome, "drop")
+        self.assertIn("<格式不对> 烤冷面吧", out.drafts[0])  # the raw answer, for the local report
+        two = json.dumps({"gist": "g", "reply": "x"}).replace('"x"', '"烤冷面吧\n我请不起火锅"')
+        out, _ = self.run_c(["RAW:" + two])
+        self.assertEqual((out.outcome, out.attempts, out.parts), ("send", 1, ["烤冷面吧", "我请不起火锅"]))
 
     def test_nicknames_may_go_out_letters_may_not(self):
         ctx = [Msg("1", E, "p1", "今晚吃啥", name="小王"), Msg("2", E + 5, "p2", "火锅", name="")]
