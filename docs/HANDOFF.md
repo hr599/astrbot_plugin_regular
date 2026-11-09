@@ -92,7 +92,7 @@ M4 social → M5 learning loop.
   - #41: "hhh" was named in the persona and ended nearly every line; removed, and a laugh ending is trimmed when one of his last 4 lines had one.
   - #43, long conversations (owner picked options 1 and 2): compose shows 30 lines (was 16), and `core/recall.py` brings back up to 3 older lines from the last 6 hours that the message picks up, plus a quoted one, word for word in an `<earlier>` block (no model call). A recall of a shown line cancels the reply. A running summary of the conversation was not done (only if needed).
   - Who said what (owner: wait and see). Safeguards: nicknames per line, quotes resolved, the `_attributed` voice check; in memory, code knows each quote's speaker and a fact about someone needs their own words or two speakers. Known gap: the quote-support check isn't asked directly whether a memory is about the right person.
-  - Open from the owner: LLBot drops offline now and then (root cause not found yet).
+  - LLBot dropping offline on Nov 9 was the owner's internet connection, not the bot.
 - **M3, memory.** The spec is the "M3 memory spec" tab of the design doc (https://claude.ai/artifact/Uz9u48RGAiw6oH4RB5zTvZ). The owner's calls: dream nightly only (plus `/reg dream now`), on GPT-6.1 Sol; the relationship record moves to M4; memories are reviewed through `/reg mem` and a local HTML report per run (Claude sees counts only); no recall tools, memories are injected. Four PRs, each behind a gate:
   - **M3a, merged (#42), running dry since Nov 9.** `offline/dream_pass.py` (gather, prompt, M3 checks, nightly caps, quote-support check, run rows), `offline/dream_admin.py` (`/reg dream off|dry|now|log`), `offline/dream_bench.py` (`/reg bench dream` on `bench/fixtures/dream_v1.json`); schema v7. Dry mode writes reports only, never memory.
   - **First real `/reg bench dream` (Nov 9):** 12/15 found, 1/10 wrong stored (N4: a boundary recording a declined 主人 request), $0.044. #44 fixes N4 (a role asked of 阿灯 is never kept), S8 (a bot_self may name 阿灯), S1 (today's date and weekdays in the prompt; what intention is for) and the fixture's S6 (its date was already past).
@@ -107,7 +107,7 @@ M4 social → M5 learning loop.
 2. **Read a few nights of dry-run reports** (`/reg dream log`, then `dream/dream-<run>.html`). The owner tells Claude roughly how many proposals were wrong or not worth keeping; that's the 90% gate.
 3. **Then M3b** (dreaming on). Claude builds it after the gate.
 4. **Live checks still open:** that a reaction shows the expected face; that the crisis DM arrives; a numbers-only look at the first days (`/reg debug`: replies and reactions per day, engaged vs ignored, cost), then retune decide with the automatic labels.
-5. **Small follow-ups:** in `/reg bench compose`, apply the 6-hour lookback to quoted lines too (live is already bounded); find why LLBot drops offline.
+5. **Small follow-up:** in `/reg bench compose`, apply the 6-hour lookback to quoted lines too (live is already bounded).
 6. **Later:** M3c, M3d; M4 (relationship record, tone, stickers, mood); M5 learning loop. Optional: the blind test, `/reg label recheck`, and whether the decide model ever goes live.
 
 ## Pointers
