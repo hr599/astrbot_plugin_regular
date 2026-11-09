@@ -1,0 +1,12 @@
+{
+  "_doc": "Emoji reactions (QQ 表情回应, OneBot set_msg_emoji_like). Ids are QQ system face ids as strings. by_cue: what to pick from for a message with that cue (core/signals); default otherwise. Half the time, once the group has reacted at least min_group_reactions times, 阿灯 picks one of the group's own three most-used reactions instead, so he reacts the way this group does. per_hour caps his reactions per group. Ids to check on the live account: 76 赞, 66 爱心, 182 笑哭, 13 呲牙, 124 OK, 179 doge.",
+  "by_cue": {
+    "laughter": ["182", "13", "179"],
+    "image": ["76", "66"],
+    "question": ["124"],
+    "default": ["76", "124"]
+  },
+  "group_share": 0.5,
+  "min_group_reactions": 5,
+  "per_hour": 20
+}

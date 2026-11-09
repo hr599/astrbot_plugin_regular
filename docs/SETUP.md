@@ -421,8 +421,18 @@ How a reply happens (`core/live.py`):
    sent, so it sees what he just said.
 
 An @ that hits a model error gets one retry; over the daily budget it gets a
-short canned in-character line instead of a model call. Reactions (emoji) aren't
-sent yet. Every turn leaves a trace (`ended_at="live"`: the rule, outcome, hit
+short canned in-character line instead of a model call.
+
+**Reactions.** When decide says "react", 阿灯 puts an emoji (QQ 表情回应) on the
+turn's last message: no model call. The emoji depends on the message (laughter,
+a photo, a question, otherwise a default; `harness/rules/reactions.json`), and
+once the group has reacted a few times, half the time it's one of the group's own
+three favourites, so he reacts the way your group does. At most 20 per group per
+hour; never on a poke or another bot's message; only with `send_mode` on (dry
+traces what he'd react with). Uses OneBot `set_msg_emoji_like`; to check on the
+live account: that LLBot accepts it, and that the default ids (76 赞, 66 爱心,
+182 笑哭, 13 呲牙, 124 OK, 179 doge) show the faces you'd expect. Edit the json
+to change them. Every turn leaves a trace (`ended_at="live"`: the rule, outcome, hit
 kinds, cost; no text).
 
 To stop him at any time: `/reg send off`, or `/reg pause <group>`.
