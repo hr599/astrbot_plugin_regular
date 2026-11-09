@@ -4,10 +4,11 @@ An [AstrBot](https://github.com/AstrBotDevs/AstrBot) plugin that aims to be a
 humanlike regular in one QQ friends group: it reads along, remembers what
 matters, and speaks when a regular would.
 
-**Status: M2 in progress, not speaking on its own yet.** It logs the configured group
-and runs decide in shadow (recording what it *would* do). The decide model and
-compose are evaluated on the bench only. Sending exists (`send_mode`, `/reg say`),
-but nothing composed is sent yet.
+**Status: M2 done and live; M3 (memory) dreaming in dry mode.** It talks in the
+configured group when talked to and chimes in by rule (`send_mode on`), reacts with
+emoji, describes photos, and flags crisis moments to the owner. Each night it
+proposes what to remember and writes a local report (`dream_mode dry`); it doesn't
+store memories yet.
 
 New session or new contributor? Start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
@@ -17,8 +18,8 @@ New session or new contributor? Start with [`docs/HANDOFF.md`](docs/HANDOFF.md).
 |---|---|---|
 | M0 | Skeleton: gate, perceive, store, traces, admin DM commands | done |
 | M1 | Bench: replay on a fake clock, labels, scores, trace viewer; baseline decide in shadow | done |
-| M2 | Speaking: decide (rules, then a model for unclear moments) → compose → voice → send | in progress: decide and compose on the bench; live replies next |
-| M3 | Memory: claims, episodes, dream pass | |
+| M2 | Speaking: decide (rules; a model for unclear moments, bench-only) → compose → voice → send | done, live |
+| M3 | Memory: claims, episodes, dream pass | M3a (dream, dry run) done; M3b–M3d next |
 | M4 | Social: relationships, mood, stickers | |
 | M5 | Learning loop (evidence-gated) | |
 
@@ -32,7 +33,7 @@ bench/             replay bench: recordings, runner, scoring, HTML trace viewer,
 services/          SQLite store (schema.sql), raw dumps, redacted debug bundles
 tests/             stdlib unittest, no AstrBot needed
 harness/           persona, decide rule numbers, voice tells, model prices
-offline/           dream verifier (memory writes)
+offline/           dream pass: the model half, the verifier, /reg dream, the synthetic dream bench
 docs/SETUP.md      AstrBot settings, LLBot, live-account checklist, every /reg command
 docs/HANDOFF.md    where things stand, how work is done here, what's next
 ```
