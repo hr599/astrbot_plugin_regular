@@ -129,6 +129,18 @@ CUTS = range(1, 11)  # 10 = never
 
 
 CUT_MIN_GAIN = 0.02  # fitted cuts replace the defaults only if dev balanced accuracy gains this much
+REPLY_SLACK = 0.10  # ...and only if they don't reply more often than the dev labels do, by more than this
+
+
+def reply_rates(ev) -> tuple[float, float]:
+    """(predicted, labelled) share of dev-labelled moments that get a reply."""
+    conf = ev["dev"].get("confusion") or {}
+    n = sum(sum(row.values()) for row in conf.values())
+    if not n:
+        return 0.0, 0.0
+    pred = sum(row.get("reply", 0) for row in conf.values()) / n
+    lab = sum((conf.get("reply") or {}).values()) / n
+    return pred, lab
 
 
 def clears(score: float, default: float) -> bool:
@@ -144,7 +156,8 @@ def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
     No reply-share term (unlike /reg bench tune): the model only judges labelled
     moments, so the replay's reply share is almost all the rules' and barely moves
     with the cuts; penalising it pushed the reply cut down to 2 and lost every
-    reaction (first scores run, Nov 9). With about 170 dev labels the search
+    reaction (first scores run, Nov 9). Cuts must also not reply on dev labels
+    more often than the labels do, plus REPLY_SLACK. With about 170 dev labels the search
     overfits easily, so the defaults stay unless beaten by CUT_MIN_GAIN; ties go to
     the cuts closest to the defaults."""
     def score_of(ev):
@@ -161,6 +174,12 @@ def fit(runs, jobs, answers) -> tuple[tuple[int, int], dict[str, Any]]:
             ev = evaluate(runs)
             s = score_of(ev)
             if not clears(s, base):
+                continue
+            pred, lab = reply_rates(ev)
+            if pred > lab + REPLY_SLACK:
+                # balanced accuracy weighs reply recall as much as quiet recall, so
+                # replying to most moments can score well and still be far too chatty
+                # live (Nov 9: cuts 5/2 replied to about half of all labelled moments)
                 continue
             key = (s, -abs(a - 5) - abs(b - 5))
             if best_key is None or key > best_key:

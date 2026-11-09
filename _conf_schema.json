@@ -56,6 +56,12 @@
     "default": "off",
     "hint": "off = 不发；dry = 只记录会发什么、什么时候发，不真发；on = 真发。也可以私聊 /reg send off|dry|on 切换。M2 之前只有 /reg say 会发。"
   },
+  "caption_images": {
+    "description": "给群里的照片写描述",
+    "type": "bool",
+    "default": true,
+    "hint": "开着时，群里每张照片发出来会让 caption 模型（provider_caption）用一两句话描述一次，阿灯和 bench 就能“看到”图。只保存描述文字，图片本身不保存；不认人、不抄号码；表情包不描述。约 ¥0.001 一张，计入 DeepSeek 预算。"
+  },
   "provider_decide": {
     "description": "模型：判断要不要说话（deepseek-flash）",
     "type": "string",

@@ -9,6 +9,7 @@ sends is the admin's /reg say test command.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 
@@ -19,12 +20,14 @@ from astrbot.api.star import Context, Star, StarTools, register
 from .adapter.environment import isolation_report
 from .adapter.inbound import raw_payload, to_chat_event
 from .adapter.llm import make_call, make_model_of
+from .adapter.media import fetch_photos
 from .adapter.outbound import reply_admin_dm, send_group_text
 from .bench.commands import bench_command, latest_summary
 from .bench.report import forget_reports
 from .bench.situations import forget_sender
 from .core.admin import AdminCommands
 from .core.budget import Budget, load_prices
+from .core import captions as cap
 from .core.llm import ROLES, AsyncReply, ModelAdmin, ModelClient
 from .core.decide import DEFAULT_ALIASES
 from .core.decide_rules import load_params
@@ -101,8 +104,10 @@ class Regular(Star):
                              paused=lambda: self.gate_cfg.paused_groups, save_mode=self._save_send_mode,
                              scope_of=lambda platform, gid: f"{platform}:GroupMessage:{gid}"),
         )
+        self.caption_images = bool(config.get("caption_images", True))
+        self.caption_stats = cap.Result()  # since start, numbers only (/reg status)
         self.pipeline = Pipeline(self.store, self.gate_cfg, admin_handler=self.admin, aliases=self.aliases,
-                                 params=load_params(self.data_dir))
+                                 params=load_params(self.data_dir), captions=self.caption_images)
         self._refresh_opt_outs()
         # Retention runs on a clock, not on traffic (PR #1 review): hourly, plus now.
         self.janitor = Janitor(self._purge, interval_s=3600)
@@ -124,6 +129,12 @@ class Regular(Star):
             out = self.pipeline.handle(ev)
             if out.action != "drop" or out.reasons.get("gate") == "own_message":
                 self.dumper.write(raw_payload(event), {"action": out.action, **out.reasons})
+            if out.reasons.get("caption_photos"):
+                gen = self.store.cache_gen  # before the download: a forget meanwhile cancels it
+                task = asyncio.create_task(self._caption(raw_payload(event), ev.msg_id,
+                                                         int(out.reasons["caption_photos"]), gen))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
             if isinstance(out.admin_reply, AsyncReply):
                 await reply_admin_dm(event, await out.admin_reply.make())
             elif out.admin_reply:
@@ -149,6 +160,23 @@ class Regular(Star):
             logger.warning(f"[regular] isolation check failed: {rep.get('error')}")
         return rep
 
+    async def _caption(self, raw, msg_id: str, expected: int, gen: int) -> None:
+        """Describe a stored message's photos (core/captions). Bytes stay in memory.
+        gen was taken when the message arrived: describe() checks it, and that the
+        message is still there, before every model request."""
+        try:
+            photos = await fetch_photos(raw)
+            r = await cap.describe(self.models, self.store, msg_id, photos, gen=gen)
+            r.skipped += max(0, expected - len(photos))  # no QQ link, too big, or not reachable
+            for k, v in r.__dict__.items():
+                if isinstance(v, int):
+                    setattr(self.caption_stats, k, getattr(self.caption_stats, k) + v)
+                else:
+                    for e, n in v.items():
+                        self.caption_stats.errors[e] = self.caption_stats.errors.get(e, 0) + n
+        except Exception:
+            logger.exception("[regular] caption error (the photo stays [图片])")
+
     def _status(self) -> dict:
         iso = self._check_isolation()
         if iso.get("isolated"):
@@ -170,6 +198,8 @@ class Regular(Star):
             "groups_paused": len(self.gate_cfg.paused_groups & self.gate_cfg.group_ids),
             "opted_out": len(self.gate_cfg.opted_out_uids),
             "raw_dump": "on" if self.dumper.enabled else "off",
+            "captions": ("on: " + json.dumps(cap.as_trace(self.caption_stats), ensure_ascii=False)
+                         if self.caption_images else "off"),
             "retention_days": self._retention_days(),
             **self.store.stats(),
         }

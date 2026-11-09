@@ -56,6 +56,7 @@ class Msg:
     media: list[str] = field(default_factory=list)
     mentions_other: bool = False  # @s someone (not 阿灯); only used to undo label sampling
     name: str = ""  # the sender's group nickname, as model prompts show speakers (never the QQ id)
+    captions: list = field(default_factory=list)  # one per photo, in order; None = not described (core/captions)
 
 
 @dataclass
