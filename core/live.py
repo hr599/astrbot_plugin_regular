@@ -43,6 +43,7 @@ VERSION = "m2c-live.1"
 @dataclass
 class _Turn:
     first_ts: float
+    snap: tuple  # (forget generation, send mode, outbox generation) when it began
     ids: list[str] = field(default_factory=list)
     task: asyncio.Task | None = None
 
@@ -70,14 +71,19 @@ class Speaker:
         """A stored group message, or a poke at 阿灯. Cheap: just (re)arms a timer."""
         if self.outbox.mode == "off" or m.is_bot:
             return
+        # what this turn may do is fixed now, at intake, and carried through the pause
+        # and the group lock: a change in either wait drops it (PR #36 review)
+        snap = self._snapshot()
         if m.kind == "poke":
-            self._spawn(self._turn_done(scope_id, [m]))
+            self._spawn(self._turn_done(scope_id, [m], snap))
             return
         key = (scope_id, m.sender)
         now = self.clock()
         t = self._turns.get(key)
-        if t is None or now - t.first_ts >= self.turn_max_s:
-            t = self._turns[key] = _Turn(now)
+        if t is None or now - t.first_ts >= self.turn_max_s or t.snap != snap:
+            if t is not None and t.snap != snap and t.task is not None:
+                t.task.cancel()  # begun under another mode, or before a forget: dropped
+            t = self._turns[key] = _Turn(now, snap)
         t.ids.append(m.msg_id)
         if t.task is not None:
             t.task.cancel()
@@ -90,32 +96,37 @@ class Speaker:
         task.add_done_callback(self.tasks.discard)
         return task
 
+    def _snapshot(self) -> tuple:
+        return (getattr(self.p.store, "cache_gen", 0), self.outbox.mode, self.outbox.gen)
+
     async def _after_pause(self, key, t: _Turn, wait: float) -> None:
         await self.sleep(wait)
         if self._turns.get(key) is t:
             del self._turns[key]
-        await self._turn_done(key[0], list(t.ids))
+        await self._turn_done(key[0], list(t.ids), t.snap)
 
     # ------------------------------------------------------------ the turn
-    async def _turn_done(self, scope_id: str, turn: list) -> None:
+    async def _turn_done(self, scope_id: str, turn: list, snap: tuple) -> None:
         lock = self._locks.setdefault(scope_id, asyncio.Lock())
         async with lock:
             try:
-                await self._speak(scope_id, turn)
+                await self._speak(scope_id, turn, snap)
             except Exception as e:  # noqa: BLE001 - a failed turn is a quiet one
                 self._trace(scope_id, None, "error", {"error": type(e).__name__})
 
-    def _moments(self, scope_id: str, turn: list) -> tuple[Msg | None, list[Msg]]:
+    def _moments(self, scope_id: str, turn: list) -> tuple[Msg | None, list[Msg], list[str]]:
+        """(target, context, the stored message ids the turn is built from)."""
         now = int(self.clock())
         msgs = stored_moments(self.p.store, scope_id, now - LOOKBACK_S, now + 1,
                               bot_uids=self.p.gate_cfg.bot_uids)
         if turn and isinstance(turn[0], Msg):  # a poke: not stored as a message
-            return turn[0], [m for m in msgs if m.kind == "message"][-CONTEXT:]
+            return turn[0], [m for m in msgs if m.kind == "message"][-CONTEXT:], []
         ids = set(turn)
         # a recalled message is kept with its text blanked: it isn't part of the turn any more
         parts = [m for m in msgs if m.msg_id in ids and m.text]
         if not parts:
-            return None, []
+            return None, [], []
+        used = [x.msg_id for x in parts]
         first, last = msgs.index(parts[0]), msgs.index(parts[-1])
         between = [x for x in msgs[first:last] if x.msg_id not in ids and x.kind == "message"]
         if between:
@@ -125,29 +136,33 @@ class Speaker:
             whole = merged_msg(parts)
             target = replace(parts[-1], mentions_bot=whole.mentions_bot, reply_to_bot=whole.reply_to_bot,
                              reply_to=parts[-1].reply_to or whole.reply_to)
-            return target, msgs[:last][-CONTEXT:]
-        return merged_msg(parts), msgs[:first][-CONTEXT:]
+            return target, msgs[:last][-CONTEXT:], used
+        return merged_msg(parts), msgs[:first][-CONTEXT:], used
 
-    async def _speak(self, scope_id: str, turn: list) -> None:
-        if self.outbox.mode == "off":
-            return
-        # everything this turn may do was decided now: the store's forget generation
-        # and the outbox's mode/generation. A recall, forget or mode change while it
-        # waits on the model cancels it; it never re-authorises itself (PR #36 review)
+    async def _speak(self, scope_id: str, turn: list, snap: tuple) -> None:
+        # what this turn may do was fixed at intake (snap): the store's forget generation
+        # and the outbox's mode/generation. A recall of any message it uses, a forget, or
+        # a mode change, during the pause, the lock or the model, cancels it; it never
+        # re-authorises itself (PR #36 review)
         store = self.p.store
-        gen = getattr(store, "cache_gen", 0)
-        mode, ogen = self.outbox.mode, self.outbox.gen
-        m, ctx = self._moments(scope_id, turn)
+        gen, mode, ogen = snap
+        if mode == "off":
+            return
+        m, ctx, used = self._moments(scope_id, turn)
         if m is None:
             return  # recalled or forgotten during the pause
 
         def still_valid() -> bool:
             if getattr(store, "cache_gen", 0) != gen:
                 return False
-            return m.kind != "message" or store.message_live(m.msg_id)
+            return all(store.message_live(i) for i in used)  # every part of the turn, not just the last
 
         def still_on() -> bool:
             return still_valid() and self.outbox.mode == mode and self.outbox.gen == ogen
+        if not still_on():
+            self._trace(scope_id, m.msg_id, "cancelled",
+                        {"cancelled": "recalled, forgotten or send mode changed while waiting", "version": VERSION})
+            return
         now = int(self.clock())
         st = self.p._limit_state(scope_id, now, m.msg_id)
         params = self.p.params
